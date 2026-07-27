@@ -105,6 +105,13 @@ target_link_libraries(terminal_test PRIVATE heapviz_core util)
 add_test(NAME terminal_restore COMMAND terminal_test)
 set_tests_properties(terminal_restore PROPERTIES TIMEOUT 60)
 
+# --- Framebuffer: clipping and the no-allocation rule (M4.2) ---------------
+add_executable(framebuffer_test framebuffer_test.cpp)
+heapviz_test_target(framebuffer_test)
+target_link_libraries(framebuffer_test PRIVATE heapviz_core)
+add_test(NAME framebuffer COMMAND framebuffer_test)
+set_tests_properties(framebuffer PROPERTIES TIMEOUT 60)
+
 # --- The TUI binary runs ----------------------------------------------------
 add_test(NAME tui_version COMMAND heapviz_tui --version)
 set_tests_properties(tui_version PROPERTIES

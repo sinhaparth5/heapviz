@@ -67,7 +67,8 @@ target_link_libraries(heapviz_preload PRIVATE heapviz_abi dl pthread rt)
 # tool runs, rather than a recompilation with its own flags.
 # ---------------------------------------------------------------------------
 add_library(heapviz_core STATIC
-  src/tui/terminal.cpp)
+  src/tui/terminal.cpp
+  src/tui/framebuffer.cpp)
 target_compile_options(heapviz_core PRIVATE ${HEAPVIZ_WARNINGS})
 target_link_libraries(heapviz_core PUBLIC heapviz_abi)
 

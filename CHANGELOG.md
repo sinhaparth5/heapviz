@@ -64,6 +64,10 @@ promise about the ABI or the CLI surface.
   conventionally and exits the same way `q` will.
 - `heapviz --term-check`, a development aid that exercises the terminal layer
   against a real terminal.
+- Double-buffered cell grid behind the renderer: 16-byte cells, a clipped
+  drawing API (text, lines, boxes, fills), and UTF-8 decoding. Buffers are
+  sized when the terminal resizes and reused for every frame after that, so
+  drawing a frame allocates nothing.
 - README notes `reset` / `stty sane` for the one case nothing can guard
   against, `kill -9`.
 

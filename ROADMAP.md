@@ -16,12 +16,12 @@ concrete enough that "done" is not a judgement call.
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
 | M3 | Sparse address representation | grid, hash table, aging | `[ ]` | 0 / 24 |
-| M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 7 / 34 |
+| M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 12 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 64 / 209**
+**Total: 69 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -506,15 +506,43 @@ restoring; a scenario that drops our `SIGABRT` handler first now isolates it.
 
 ### M4.2 Framebuffer
 
-- [ ] `struct Cell { char32_t glyph; uint32_t fg; uint32_t bg; uint8_t attrs; }`,
+- [x] `struct Cell { char32_t glyph; uint32_t fg; uint32_t bg; uint8_t attrs; }`,
       kept to 16 bytes, `attrs` for bold/dim/underline.
-- [ ] `FrontBuffer` and `BackBuffer`, flat `std::vector<Cell>` of `w * h`,
+- [x] `FrontBuffer` and `BackBuffer`, flat `std::vector<Cell>` of `w * h`,
       allocated once per resize.
-- [ ] Drawing API on the back buffer: `put(x, y, cell)`, `text(x, y, str, fg,
+- [x] Drawing API on the back buffer: `put(x, y, cell)`, `text(x, y, str, fg,
       bg)`, `hline`, `vline`, `box(rect, style)`, `fill(rect, cell)`.
-- [ ] All drawing clipped to the buffer. An off-by-one on a 40-column terminal
+- [x] All drawing clipped to the buffer. An off-by-one on a 40-column terminal
       must not be a heap overflow in the tool that watches for heap overflows.
-- [ ] `swap()` after flush; clear the new back buffer to the "empty cell".
+- [x] `swap()` after flush; clear the new back buffer to the "empty cell".
+
+#### M4.2 completion notes
+
+**`Cell` carries three padding bytes, so cells are never compared with
+memcmp.** Padding is indeterminate, and two visually identical cells differing
+in it would make the M4.3 diff redraw cells that did not change. `operator==`
+compares the four fields; field offsets are pinned by static asserts.
+
+**Clipping is centralised.** `put()` bounds-checks, and `fill`/`hline`/`vline`/
+`box` clip through `clip_rect`, which does its arithmetic in 64-bit so a rect
+starting near `INT_MAX` cannot wrap into something that overlaps the screen.
+`box` additionally clamps its edge loops to the visible span: `put` would clip
+anyway, but a rect two million columns wide would otherwise spin through two
+million rejected calls.
+
+`text()` takes UTF-8 and decodes to `char32_t` (M4.3 has the encoder for the
+reverse trip). Malformed input yields U+FFFD and always consumes at least one
+byte, so a decoding bug shows on screen rather than hanging the renderer.
+Every code point is assumed one column wide, which holds for ASCII and the
+block-drawing glyphs the design uses.
+
+Verified by `tests/framebuffer_test.cpp`, which counts global `operator new`
+calls across ten frames of drawing and requires zero (ground rule #5). Eight
+mutations were tried; three initially went undetected and each exposed a real
+gap in the test rather than in the code: the overflow case used origin 0 where
+nothing wraps, a no-op resize was never checked for reuse, and the swap-clears
+check needed two frames because after one the recycled buffer is still empty
+from `resize()`.
 
 ### M4.3 Differential ANSI streamer
 
