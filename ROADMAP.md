@@ -16,12 +16,12 @@ concrete enough that "done" is not a judgement call.
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
 | M3 | Sparse address representation | grid, hash table, aging | `[ ]` | 0 / 24 |
-| M4 | ANSI terminal engine | raw mode, double buffer, diff | `[ ]` | 0 / 34 |
+| M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 7 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 57 / 209**
+**Total: 64 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -463,21 +463,46 @@ bounded RSS; colours age smoothly with no popping.
 
 ### M4.1 Terminal setup / teardown
 
-- [ ] `tcgetattr` to save original termios; store in a file-scope static so
+- [x] `tcgetattr` to save original termios; store in a file-scope static so
       signal handlers can reach it.
-- [ ] Raw mode: clear `ICANON | ECHO | ISIG` (keep `ISIG` if you want Ctrl-C to
+- [x] Raw mode: clear `ICANON | ECHO | ISIG` (keep `ISIG` if you want Ctrl-C to
       work normally; decide and document), clear `IXON | ICRNL`, set
       `VMIN = 0`, `VTIME = 0`.
-- [ ] Enter alternate screen `\033[?1049h`, hide cursor `\033[?25l`, clear
+- [x] Enter alternate screen `\033[?1049h`, hide cursor `\033[?25l`, clear
       `\033[2J`.
-- [ ] Teardown in exact reverse order, wrapped in an RAII guard.
-- [ ] `atexit` handler + handlers for `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGSEGV`,
+- [x] Teardown in exact reverse order, wrapped in an RAII guard.
+- [x] `atexit` handler + handlers for `SIGINT`, `SIGTERM`, `SIGHUP`, `SIGSEGV`,
       `SIGABRT`. Handlers must be async-signal-safe: set a flag, or if dying,
       `write(2)` the restore sequence directly and `_exit`. No `printf`.
-- [ ] `std::set_terminate` also restores, so an uncaught exception does not
+- [x] `std::set_terminate` also restores, so an uncaught exception does not
       leave a wrecked terminal.
-- [ ] Verify: `kill -9` cannot be caught, so also document
+- [x] Verify: `kill -9` cannot be caught, so also document
       `reset` / `stty sane` as the user escape hatch in the README.
+
+#### M4.1 completion notes
+
+**D4 resolved: `ISIG` stays enabled.** Ctrl-C therefore remains a signal rather
+than a keystroke to decode, and `SIGINT` sets the same quit flag `q` does, so
+both exits run one teardown path. `IEXTEN` is also cleared (Ctrl-V must not
+swallow the next byte) and `OPOST` is cleared, because the renderer positions
+the cursor itself and any LF→CRLF rewriting by the kernel is corruption.
+
+**Fatal signals re-raise instead of `_exit`.** The roadmap suggested `_exit`
+after restoring. That would hand the user a clean shell and silently swallow a
+crash in the profiler, losing the core dump and the exit status. Handlers are
+installed with `SA_RESETHAND`, so `raise(sig)` after restoring dies exactly as
+it would have without us.
+
+**State is set before the terminal is touched.** `g_active` goes up right after
+`tcgetattr` succeeds, not after `tcsetattr`. The other ordering leaves a window
+where a signal arriving mid-`enter()` strands the terminal in raw mode.
+
+Verified by `tests/terminal_test.cpp`, which allocates a pty and runs each exit
+path in a child attached to it, checking both the bytes that reached the
+terminal and the termios left behind. All five guards were mutation-tested.
+One mutation (removing `std::set_terminate`) initially went undetected, because
+`std::terminate` calls `abort()` and the `SIGABRT` handler was already
+restoring; a scenario that drops our `SIGABRT` handler first now isolates it.
 
 ### M4.2 Framebuffer
 

@@ -96,6 +96,15 @@ if(NOT HEAPVIZ_ASAN AND CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
   set_tests_properties(interceptor_overhead PROPERTIES TIMEOUT 300)
 endif()
 
+# --- Terminal setup/teardown (M4.1) ----------------------------------------
+# Needs a real terminal to be meaningful, so the test allocates a pty and runs
+# each exit path in a child attached to it. -lutil is for openpty.
+add_executable(terminal_test terminal_test.cpp)
+heapviz_test_target(terminal_test)
+target_link_libraries(terminal_test PRIVATE heapviz_core util)
+add_test(NAME terminal_restore COMMAND terminal_test)
+set_tests_properties(terminal_restore PROPERTIES TIMEOUT 60)
+
 # --- The TUI binary runs ----------------------------------------------------
 add_test(NAME tui_version COMMAND heapviz_tui --version)
 set_tests_properties(tui_version PROPERTIES

@@ -57,6 +57,15 @@ promise about the ABI or the CLI surface.
 - Four more tests: multi-producer ring stress (10M events through a 4096-slot
   ring), end-to-end interception across a process boundary, transitive coverage
   of indirect allocation paths, and an overhead budget check.
+- Terminal handling: heapviz enters raw mode and the alternate screen, and
+  gives the terminal back on every exit path it can reach, including `SIGINT`,
+  `SIGTERM`, `SIGHUP`, a crash, and an uncaught exception. A crash still dies
+  as a crash, with its core dump and exit status intact. Ctrl-C keeps working
+  conventionally and exits the same way `q` will.
+- `heapviz --term-check`, a development aid that exercises the terminal layer
+  against a real terminal.
+- README notes `reset` / `stty sane` for the one case nothing can guard
+  against, `kill -9`.
 
 ### Changed
 

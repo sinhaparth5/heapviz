@@ -61,18 +61,31 @@ target_compile_definitions(heapviz_preload PRIVATE _GNU_SOURCE)
 target_link_libraries(heapviz_preload PRIVATE heapviz_abi dl pthread rt)
 
 # ---------------------------------------------------------------------------
+# heapviz_core - the TUI's guts, as a static library.
+#
+# Split out from the binary so the tests exercise the same objects the shipped
+# tool runs, rather than a recompilation with its own flags.
+# ---------------------------------------------------------------------------
+add_library(heapviz_core STATIC
+  src/tui/terminal.cpp)
+target_compile_options(heapviz_core PRIVATE ${HEAPVIZ_WARNINGS})
+target_link_libraries(heapviz_core PUBLIC heapviz_abi)
+
+# ---------------------------------------------------------------------------
 # heapviz - the TUI consumer.
 # ---------------------------------------------------------------------------
 add_executable(heapviz_tui src/tui/main.cpp)
 set_target_properties(heapviz_tui PROPERTIES OUTPUT_NAME heapviz)
 target_compile_options(heapviz_tui PRIVATE ${HEAPVIZ_WARNINGS})
-target_link_libraries(heapviz_tui PRIVATE heapviz_abi pthread rt)
+target_link_libraries(heapviz_tui PRIVATE heapviz_core heapviz_abi pthread rt)
 
 # ASan and an LD_PRELOAD malloc hook cannot share a process, so the sanitizer
 # preset covers the TUI and tests only, never heapviz_preload.
 if(HEAPVIZ_ASAN)
-  target_compile_options(heapviz_tui PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
-  target_link_options(heapviz_tui    PRIVATE -fsanitize=address,undefined)
+  foreach(t heapviz_core heapviz_tui)
+    target_compile_options(${t} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(${t}    PRIVATE -fsanitize=address,undefined)
+  endforeach()
 endif()
 
 # ---------------------------------------------------------------------------

@@ -163,11 +163,28 @@ Planned for v0.1.0.
 | `?` | Help |
 | `q` | Quit |
 
+### If the terminal is left in a strange state
+
+heapviz restores termios, the cursor, and the alternate screen on every exit
+path it can reach: quitting with `q`, `SIGINT`, `SIGTERM`, `SIGHUP`, a crash,
+or an uncaught exception. `SIGKILL` cannot be caught by anything, so
+`kill -9 heapviz` is the one case that can leave your shell without an echo or
+a visible cursor. Recover with:
+
+```sh
+reset        # or, if that is unavailable:
+stty sane
+```
+
+Typing it blind works even when the echo is off.
+
 ---
 
 ## Project status
 
-Pre-alpha: design complete, implementation starting.
+Pre-alpha, and under active construction. The `LD_PRELOAD` interceptor works
+and captures allocations at about 31 ns per call; the terminal layer is
+starting. There is no usable visualisation yet.
 
 [**ROADMAP.md**](ROADMAP.md) tracks 209 tasks across 8 milestones, from the
 shared-memory ABI through the interceptor, sparse grid, ANSI engine,
