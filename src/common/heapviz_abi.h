@@ -44,6 +44,30 @@ extern "C" {
 #  define HV_INLINE             static inline
 #endif
 
+/* Atomic operations, spelled once for both languages. C's generic
+ * atomic_load_explicit and C++'s member .load() take different forms, and the
+ * memory_order constants live in namespace std on the C++ side. */
+#ifdef __cplusplus
+#  define HV_MO_RELAXED std::memory_order_relaxed
+#  define HV_MO_ACQUIRE std::memory_order_acquire
+#  define HV_MO_RELEASE std::memory_order_release
+#  define HV_LOAD(p, mo)         ((p)->load(mo))
+#  define HV_STORE(p, v, mo)     ((p)->store((v), (mo)))
+#  define HV_FETCH_ADD(p, v, mo) ((p)->fetch_add((v), (mo)))
+#  define HV_CAS_WEAK(p, expected, desired, mo_ok, mo_fail) \
+       ((p)->compare_exchange_weak(*(expected), (desired), (mo_ok), (mo_fail)))
+#else
+#  define HV_MO_RELAXED memory_order_relaxed
+#  define HV_MO_ACQUIRE memory_order_acquire
+#  define HV_MO_RELEASE memory_order_release
+#  define HV_LOAD(p, mo)         atomic_load_explicit((p), (mo))
+#  define HV_STORE(p, v, mo)     atomic_store_explicit((p), (v), (mo))
+#  define HV_FETCH_ADD(p, v, mo) atomic_fetch_add_explicit((p), (v), (mo))
+#  define HV_CAS_WEAK(p, expected, desired, mo_ok, mo_fail) \
+       atomic_compare_exchange_weak_explicit((p), (expected), (desired), \
+                                             (mo_ok), (mo_fail))
+#endif
+
 /* std::atomic<uint64_t> and _Atomic uint64_t are layout-compatible on the
  * gcc/clang Linux targets we support: both are 8 bytes, 8-byte aligned, and
  * lock-free. tests/abi_layout proves it at runtime by diffing the layout dump
@@ -56,7 +80,17 @@ extern "C" {
 /* "HPZV1" - published to the ring header LAST, with a release store. Its
  * presence is what tells a consumer the region is fully initialised. */
 #define HEAPVIZ_ABI_MAGIC   UINT64_C(0x48505A5631000000)
-#define HEAPVIZ_ABI_VERSION 1u
+
+/* v2: multi-producer ring.
+ *
+ * v1 assumed a single producer. That is wrong for any threaded target: every
+ * thread that calls malloc is a producer, and concurrent claims on a
+ * single-producer head corrupt the ring. v2 claims slots with a CAS loop and
+ * publishes each slot independently through two flag bits in the `op` byte, so
+ * the consumer can tell a written slot from one that is still in flight.
+ * HvEvent and HvRingHeader keep their sizes; `op` gained the flag bits and the
+ * header's reserved tail gained `capacity_log2`. */
+#define HEAPVIZ_ABI_VERSION 2u
 
 #define HV_CACHELINE 64u
 
@@ -64,8 +98,8 @@ extern "C" {
 /* Event packet - exactly 32 bytes                                    */
 /* ------------------------------------------------------------------ */
 
-/* Operation codes. Stored as uint8_t so the value is the wire format; do not
- * reorder or reuse a retired number. */
+/* Operation codes. Stored in the low 6 bits of HvEvent.op so the value is the
+ * wire format; do not reorder or reuse a retired number. */
 enum {
     HV_OP_MALLOC   = 0,
     HV_OP_FREE     = 1,
@@ -74,6 +108,25 @@ enum {
     HV_OP_MEMALIGN = 4,
     HV_OP__COUNT
 };
+
+/* The `op` byte doubles as the per-slot publication flag, which is what makes a
+ * multi-producer ring possible without widening HvEvent past 32 bytes.
+ *
+ *   bits 0-5  opcode
+ *   bit  6    lap parity: (sequence >> capacity_log2) & 1
+ *   bit  7    committed
+ *
+ * A producer fills the slot, then release-stores `op` with both flags set. A
+ * consumer at sequence s accepts the slot only when COMMIT is set AND the
+ * parity matches s's own lap. The parity bit is what stops the consumer
+ * mistaking a fully-committed event from the PREVIOUS lap around the ring for
+ * the one it is waiting on; the commit bit covers the first lap, where the
+ * region is still zero-filled. */
+#define HV_OP_MASK       0x3Fu
+#define HV_OP_PARITY_BIT 0x40u
+#define HV_OP_COMMIT_BIT 0x80u
+
+HV_STATIC_ASSERT(HV_OP__COUNT <= HV_OP_MASK, "opcodes must fit in 6 bits");
 
 /* One allocator event.
  *
@@ -136,6 +189,8 @@ typedef struct HvRingHeader {
     uint32_t flags;         /* reserved, must be 0                     */
     uint64_t start_time_ns; /* CLOCK_MONOTONIC at producer init        */
     char     comm[16];      /* producer comm, NUL-padded               */
+    uint32_t capacity_log2; /* log2(capacity); the lap-parity shift    */
+    uint32_t reserved0;     /* pads block 0 to exactly one cache line  */
 
     /* --- block 1: producer writes ---------------------------------- */
     HV_ALIGNAS(HV_CACHELINE) HV_ATOMIC(uint64_t) head;
@@ -147,6 +202,13 @@ typedef struct HvRingHeader {
     HV_ALIGNAS(HV_CACHELINE) HV_ATOMIC(uint64_t) dropped;
     HV_ATOMIC(uint64_t) total_events;
     HV_ATOMIC(uint32_t) producer_exited;
+
+    /* Set by the consumer once it has mapped the region. A producer started
+     * with HEAPVIZ_WAIT_MS blocks in its constructor until it sees this, so a
+     * short-lived target cannot run to completion and unlink the segment before
+     * anyone attaches. Consumer-write / producer-read, but it shares block 3
+     * because it is touched exactly once per process, not per event. */
+    HV_ATOMIC(uint32_t) consumer_attached;
 } HvRingHeader;
 
 /* ------------------------------------------------------------------ */
@@ -158,6 +220,13 @@ typedef struct HvRingHeader {
 
 HV_INLINE int hv_is_pow2(uint64_t v) {
     return v != 0 && (v & (v - 1)) == 0;
+}
+
+/* log2 of a power of two. Caller must have checked hv_is_pow2. */
+HV_INLINE uint32_t hv_log2_pow2(uint64_t v) {
+    uint32_t n = 0;
+    while ((v >>= 1) != 0) n++;
+    return n;
 }
 
 /* Bytes to map for a ring of `capacity` events, rounded up to `page_size`.
@@ -227,11 +296,14 @@ HV_STATIC_ASSERT(offsetof(HvRingHeader, pid)             ==  24, "pid @ 24");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, flags)           ==  28, "flags @ 28");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, start_time_ns)   ==  32, "start_time_ns @ 32");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, comm)            ==  40, "comm @ 40");
+HV_STATIC_ASSERT(offsetof(HvRingHeader, capacity_log2)   ==  56, "capacity_log2 @ 56");
+HV_STATIC_ASSERT(offsetof(HvRingHeader, reserved0)       ==  60, "reserved0 @ 60");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, head)            ==  64, "head @ 64");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, tail)            == 128, "tail @ 128");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, dropped)         == 192, "dropped @ 192");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, total_events)    == 200, "total_events @ 200");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, producer_exited) == 208, "producer_exited @ 208");
+HV_STATIC_ASSERT(offsetof(HvRingHeader, consumer_attached) == 212, "consumer_attached @ 212");
 
 /* head and tail on separate cache lines - the whole point of the padding. */
 HV_STATIC_ASSERT(offsetof(HvRingHeader, tail) - offsetof(HvRingHeader, head)

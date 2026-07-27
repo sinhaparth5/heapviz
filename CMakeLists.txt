@@ -55,6 +55,9 @@ set_target_properties(heapviz_preload PROPERTIES
   C_VISIBILITY_PRESET hidden
   LINKER_LANGUAGE    C)
 target_compile_options(heapviz_preload PRIVATE ${HEAPVIZ_WARNINGS} -fPIC)
+# RTLD_NEXT, malloc_usable_size, memalign, pvalloc, and gettid are all GNU
+# extensions. The interceptor is inherently glibc-specific, so ask for them.
+target_compile_definitions(heapviz_preload PRIVATE _GNU_SOURCE)
 target_link_libraries(heapviz_preload PRIVATE heapviz_abi dl pthread rt)
 
 # ---------------------------------------------------------------------------
@@ -78,6 +81,11 @@ endif()
 # ---------------------------------------------------------------------------
 add_executable(hello_alloc examples/hello_alloc.c)
 target_compile_options(hello_alloc PRIVATE ${HEAPVIZ_WARNINGS})
+
+add_executable(churn examples/churn.c)
+target_compile_options(churn PRIVATE ${HEAPVIZ_WARNINGS})
+target_compile_definitions(churn PRIVATE _POSIX_C_SOURCE=200809L)
+target_link_libraries(churn PRIVATE pthread)
 
 # ---------------------------------------------------------------------------
 # Tests

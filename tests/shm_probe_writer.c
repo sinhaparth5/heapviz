@@ -78,6 +78,7 @@ int main(void) {
     h->abi_version = HEAPVIZ_ABI_VERSION;
     h->event_size  = (uint32_t)sizeof(HvEvent);
     h->capacity    = PROBE_CAPACITY;
+    h->capacity_log2 = hv_log2_pow2(PROBE_CAPACITY);
     h->pid         = pid;
     h->flags       = 0;
     clock_gettime(CLOCK_MONOTONIC, &ts);

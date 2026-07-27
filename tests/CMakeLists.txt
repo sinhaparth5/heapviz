@@ -47,7 +47,56 @@ target_link_libraries(preload_load PRIVATE dl)
 add_test(NAME preload_loads
   COMMAND preload_load $<TARGET_FILE:heapviz_preload>)
 
+# --- Multi-producer ring stress -------------------------------------------
+add_executable(ring_test ring_test.c)
+heapviz_test_target(ring_test)
+target_link_libraries(ring_test PRIVATE pthread)
+# 4 producers x 2.5M events through a 4096-slot ring: ~2400 wraps, which is what
+# actually exercises the lap-parity bit.
+add_test(NAME ring_mpsc COMMAND ring_test 4 10000000)
+set_tests_properties(ring_mpsc PROPERTIES TIMEOUT 120)
+
+# --- End-to-end: real LD_PRELOAD interception across a process boundary ----
+add_executable(intercept_e2e intercept_e2e.cpp)
+heapviz_test_target(intercept_e2e)
+# ASan supplies its own malloc, so LD_PRELOAD-ing ours into an ASan-built
+# target is the combination that cannot coexist (ROADMAP.md M0.1). Skip the
+# preload-driven tests there; they run in debug and release.
+if(NOT HEAPVIZ_ASAN)
+  add_test(NAME intercept_end_to_end
+    COMMAND intercept_e2e $<TARGET_FILE:heapviz_preload> $<TARGET_FILE:churn>)
+  set_tests_properties(intercept_end_to_end PROPERTIES TIMEOUT 120)
+endif()
+
+# --- Transitive coverage: strdup/asprintf/getline/operator new -------------
+add_executable(transitive_target transitive_target.cpp)
+target_compile_options(transitive_target PRIVATE ${HEAPVIZ_WARNINGS})
+target_compile_definitions(transitive_target PRIVATE _GNU_SOURCE)
+
+add_executable(transitive_e2e transitive_e2e.cpp)
+heapviz_test_target(transitive_e2e)
+if(NOT HEAPVIZ_ASAN)
+  add_test(NAME transitive_interception
+    COMMAND transitive_e2e $<TARGET_FILE:heapviz_preload> $<TARGET_FILE:transitive_target>)
+  set_tests_properties(transitive_interception PROPERTIES TIMEOUT 120)
+endif()
+
+# --- Interceptor overhead budget (M1.8: under 50 ns/call) ------------------
+add_executable(overhead_bench overhead_bench.c)
+heapviz_test_target(overhead_bench)
+# Only meaningful on an optimised build. At -O0 the interceptor costs 45-56 ns
+# and straddles the budget, which made this test flaky in debug for no useful
+# reason: the 50 ns figure is a claim about what ships, not about -O0.
+if(NOT HEAPVIZ_ASAN AND CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
+  add_test(NAME interceptor_overhead
+    COMMAND ${CMAKE_COMMAND}
+            -DBENCH=$<TARGET_FILE:overhead_bench>
+            -DPRELOAD=$<TARGET_FILE:heapviz_preload>
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/run_overhead.cmake)
+  set_tests_properties(interceptor_overhead PROPERTIES TIMEOUT 300)
+endif()
+
 # --- The TUI binary runs ----------------------------------------------------
 add_test(NAME tui_version COMMAND heapviz_tui --version)
 set_tests_properties(tui_version PROPERTIES
-  PASS_REGULAR_EXPRESSION "ABI v1, 32-byte events, 256-byte ring header")
+  PASS_REGULAR_EXPRESSION "ABI v2, 32-byte events, 256-byte ring header")

@@ -43,6 +43,32 @@ promise about the ABI or the CLI surface.
 
 ### Added
 
+- Working `LD_PRELOAD` interceptor: `malloc`, `free`, `calloc`, `realloc`,
+  `posix_memalign`, `aligned_alloc`, `memalign`, `valloc`, and `pvalloc`, plus
+  everything reaching them indirectly (`strdup`, `asprintf`, `getline`, C++
+  `operator new`). Adds 31 ns per allocator call against a 50 ns budget.
+- Lock-free multi-producer ring buffer shared between the target process and
+  heapviz, with per-slot commit and lap-parity publication.
+- `HEAPVIZ_CAPACITY` (ring size, power of two), `HEAPVIZ_DISABLE`, and
+  `HEAPVIZ_WAIT_MS` (hold the target in its constructor until a consumer
+  attaches, so short-lived programs do not lose their telemetry).
+- `examples/churn.c`: configurable workload with steady, bursty, fragmenting,
+  mmap, and mixed modes, plus a thread count and rate limit.
+- Four more tests: multi-producer ring stress (10M events through a 4096-slot
+  ring), end-to-end interception across a process boundary, transitive coverage
+  of indirect allocation paths, and an overhead budget check.
+
+### Changed
+
+- **ABI break: `HEAPVIZ_ABI_VERSION` 1 to 2.** Both `libheapviz.so` and the
+  `heapviz` binary must be rebuilt together. The v1 ring assumed a single
+  producer, which corrupts on any threaded target since every thread calling
+  `malloc` is a producer. v2 claims slots with a CAS loop and publishes each
+  slot through two flag bits in `HvEvent.op` (bit 7 commit, bit 6 lap parity;
+  the opcode now occupies bits 0-5). `HvRingHeader` gained `capacity_log2` at
+  offset 56 and `consumer_attached` at offset 212. `HvEvent` and `HvRingHeader`
+  keep their 32- and 256-byte sizes.
+
 - Shared memory ABI (`src/common/heapviz_abi.h`) at `HEAPVIZ_ABI_VERSION` 1: a
   32-byte `HvEvent` packet and a 256-byte `HvRingHeader` laid out across four
   cache lines, with `head` and `tail` deliberately on separate lines. Compiles

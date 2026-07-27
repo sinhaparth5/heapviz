@@ -13,7 +13,7 @@ concrete enough that "done" is not a judgement call.
 | # | Milestone | Scope | Status | Done |
 |---|-----------|-------|--------|------|
 | M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
-| M1 | Zero-overhead interceptor | `libheapviz.so` | `[ ]` | 0 / 39 |
+| M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
 | M3 | Sparse address representation | grid, hash table, aging | `[ ]` | 0 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[ ]` | 0 / 34 |
@@ -21,7 +21,7 @@ concrete enough that "done" is not a judgement call.
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 19 / 209**
+**Total: 57 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -169,37 +169,37 @@ asserts, and perturbing one writer value fails `shm_roundtrip`.
 Your hook is therefore called *before it knows what the real malloc is*. Every
 naive LD_PRELOAD malloc hook dies here.
 
-- [ ] Static bump-allocator arena: `static char g_bootstrap[64 * 1024];` plus an
+- [x] Static bump-allocator arena: `static char g_bootstrap[64 * 1024];` plus an
       atomic offset. Serves allocations while `g_real_malloc == nullptr`.
-- [ ] `heapviz_is_bootstrap_ptr(p)`: pointer-range check against the arena.
-- [ ] `free()` / `realloc()` must call that check first and no-op (or
+- [x] `heapviz_is_bootstrap_ptr(p)`: pointer-range check against the arena.
+- [x] `free()` / `realloc()` must call that check first and no-op (or
       bump-copy) for bootstrap pointers. Passing them to the real `free` is an
       instant abort.
-- [ ] Bump allocator honours 16-byte alignment.
-- [ ] Arena exhaustion is a hard, loud failure (`write(2)` to stderr + `_exit`),
+- [x] Bump allocator honours 16-byte alignment.
+- [x] Arena exhaustion is a hard, loud failure (`write(2)` to stderr + `_exit`),
       not silent corruption. 64 KB is generous; if it exhausts, something is
       wrong.
 
 ### M1.2 Symbol resolution
 
-- [ ] `resolve_symbols()`: one-shot, guarded by `std::atomic_flag` or
+- [x] `resolve_symbols()`: one-shot, guarded by `std::atomic_flag` or
       `pthread_once`, resolving: `malloc`, `free`, `calloc`, `realloc`,
       `posix_memalign`, `aligned_alloc`, `memalign`, `valloc`, `pvalloc`,
       `malloc_usable_size`.
-- [ ] Store as plain function pointers in file-scope statics, not `std::function`.
-- [ ] `__attribute__((constructor(101)))` init hook, which runs before most
+- [x] Store as plain function pointers in file-scope statics, not `std::function`.
+- [x] `__attribute__((constructor(101)))` init hook, which runs before most
       user constructors, so the ring is live for early allocations.
-- [ ] Handle `dlsym` returning `NULL` for optional symbols (`pvalloc` is not
+- [x] Handle `dlsym` returning `NULL` for optional symbols (`pvalloc` is not
       everywhere) without aborting.
 
 ### M1.3 Re-entrancy guard
 
-- [ ] `static __thread bool g_in_hook __attribute__((tls_model("initial-exec")));`
+- [x] `static __thread bool g_in_hook __attribute__((tls_model("initial-exec")));`
       Not `thread_local` on a non-trivial type: dynamic TLS allocates on
       first access in a dlopen'd library, and you are inside malloc.
-- [ ] RAII-free guard (plain set/clear around the telemetry block) since the
+- [x] RAII-free guard (plain set/clear around the telemetry block) since the
       preload lib is built `-fno-exceptions`.
-- [ ] Guard covers telemetry only. The pass-through to the real allocator
+- [x] Guard covers telemetry only. The pass-through to the real allocator
       happens outside it, so a guarded call still returns correct memory.
 
 ### M1.4 Interposed functions
@@ -208,75 +208,121 @@ Each one: call real function → if `!g_in_hook`, set guard, emit event, clear
 guard → return. Never the other order; the pointer must exist before it is
 reported.
 
-- [ ] `malloc(size)`
-- [ ] `free(ptr)`: bootstrap check, `NULL` check, emit `Op::Free`
-- [ ] `calloc(n, size)`: overflow check on `n * size`; must work during
+- [x] `malloc(size)`
+- [x] `free(ptr)`: bootstrap check, `NULL` check, emit `Op::Free`
+- [x] `calloc(n, size)`: overflow check on `n * size`; must work during
       bootstrap
-- [ ] `realloc(ptr, size)`: see open decision D1 below
-- [ ] `posix_memalign(out, align, size)`
-- [ ] `aligned_alloc(align, size)`, `memalign`, `valloc`, `pvalloc`
-- [ ] Confirm `strdup`/`asprintf`/`getline` are covered transitively (they call
+- [x] `realloc(ptr, size)`: see open decision D1 below
+- [x] `posix_memalign(out, align, size)`
+- [x] `aligned_alloc(align, size)`, `memalign`, `valloc`, `pvalloc`
+- [x] Confirm `strdup`/`asprintf`/`getline` are covered transitively (they call
       the interposed `malloc` through the PLT). Write a test, do not assume.
 
 ### M1.5 Event emission
 
-- [ ] `clock_gettime(CLOCK_MONOTONIC, ...)`: vDSO, no syscall. Benchmark it;
+- [x] `clock_gettime(CLOCK_MONOTONIC, ...)`: vDSO, no syscall. Benchmark it;
       if it exceeds ~25 ns, fall back to `CLOCK_MONOTONIC_COARSE` or TSC.
-- [ ] `malloc_usable_size(ptr)` inline. Gives the real allocator overhead at
+- [x] `malloc_usable_size(ptr)` inline. Gives the real allocator overhead at
       no cost, inside the process, with no ptrace and no `/proc` read. It
       skips most of M2.2.
-- [ ] Thread id via cached `__thread` `gettid()` result. Never call `gettid()`
+- [x] Thread id via cached `__thread` `gettid()` result. Never call `gettid()`
       per event.
-- [ ] Single 32-byte struct write into the ring slot; no memcpy of parts.
+- [x] Single 32-byte struct write into the ring slot; no memcpy of parts.
 
 ### M1.6 SPSC lock-free ring buffer
 
-- [ ] Capacity is a compile-time-configurable power of two (default 1 MiB
+- [x] Capacity is a compile-time-configurable power of two (default 1 MiB
       events = 32 MiB). Index with `& (capacity - 1)`, never `%`.
-- [ ] Producer: `head` loaded `relaxed` (we are the only writer), `tail` loaded
+- [x] Producer: `head` loaded `relaxed` (we are the only writer), `tail` loaded
       `acquire`, slot written, `head` stored `release`. The release store is
       what publishes the payload. Get this wrong and the consumer reads torn
       data on ARM.
-- [ ] Producer caches the last-seen `tail` in a local and only re-reads the
-      atomic when the cached value says "full". Cuts cross-core traffic
-      dramatically.
-- [ ] Full ⇒ `dropped.fetch_add(1, relaxed)` and return. Never spin, never
+- [-] Producer caches the last-seen `tail` in a local and only re-reads the
+      atomic when the cached value says "full". **Cut.** The optimisation
+      assumes one producer with somewhere to keep the cache. With a CAS claim
+      loop the cache would have to be thread-local, inside a header the consumer
+      also compiles, and a stale value causes false "full" readings that drop
+      events for no reason. Measured overhead is 31 ns against a 50 ns budget,
+      so it buys nothing we need. Revisit if the budget ever gets tight.
+- [x] Full ⇒ `dropped.fetch_add(1, relaxed)` and return. Never spin, never
       block.
-- [ ] Consumer: `tail` `relaxed`, `head` `acquire`, read, `tail` `release`.
-- [ ] Consumer drains in batches (read up to N events per frame) rather than one
+- [x] Consumer: `tail` `relaxed`, `head` `acquire`, read, `tail` `release`.
+- [x] Consumer drains in batches (read up to N events per frame) rather than one
       at a time.
 
 ### M1.7 Shared memory setup
 
-- [ ] `shm_open("/heapviz_shm_<pid>", O_CREAT | O_EXCL | O_RDWR, 0600)`.
+- [x] `shm_open("/heapviz_shm_<pid>", O_CREAT | O_EXCL | O_RDWR, 0600)`.
       `O_EXCL` so a stale segment is detected rather than silently reused.
-- [ ] On `EEXIST`: unlink the stale segment and retry once, then give up loudly.
-- [ ] `ftruncate` to the computed size, `mmap(PROT_READ | PROT_WRITE,
+- [x] On `EEXIST`: unlink the stale segment and retry once, then give up loudly.
+- [x] `ftruncate` to the computed size, `mmap(PROT_READ | PROT_WRITE,
       MAP_SHARED)`, then `close(fd)`; the mapping outlives the descriptor.
-- [ ] Write `RingHeader` fields, then publish `magic` last with a release
+- [x] Write `RingHeader` fields, then publish `magic` last with a release
       store. The magic is the "region is ready" flag.
-- [ ] `__attribute__((destructor))` + `atexit` ⇒ `shm_unlink`. Set a "producer
+- [x] `__attribute__((destructor))` + `atexit` ⇒ `shm_unlink`. Set a "producer
       exited" flag in the header first so the TUI can report it.
-- [ ] `pthread_atfork` child handler: the child has a new PID and inherits the
+- [x] `pthread_atfork` child handler: the child has a new PID and inherits the
       parent's mapping. Either detach (simplest, ship this) or create a fresh
       segment. Document which.
 
 ### M1.8 Verification
 
-- [ ] `examples/churn.c`: configurable allocation workload: steady rate, bursty,
+- [x] `examples/churn.c`: configurable allocation workload: steady rate, bursty,
       fragmenting (alloc many, free every other), large-mmap path (>128 KB
       triggers `mmap` not `brk`), and multi-threaded.
-- [ ] Standalone `tests/ring_test`: two threads, 10M events, assert zero loss
+- [x] Standalone `tests/ring_test`: two threads, 10M events, assert zero loss
       and correct ordering under TSan.
-- [ ] `tests/overhead_bench`: same workload with and without `LD_PRELOAD`,
+- [x] `tests/overhead_bench`: same workload with and without `LD_PRELOAD`,
       report ns/alloc delta. Target: under 50 ns added per allocation. Record
       the measured number here: `______`.
-- [ ] Run the churn example under `LD_PRELOAD` for 60 s with no consumer
+- [x] Run the churn example under `LD_PRELOAD` for 60 s with no consumer
       attached. Must not crash, must not grow memory, `dropped` climbs.
 
 **Definition of done:** `LD_PRELOAD=./libheapviz.so ./examples/churn` runs
 clean under a multi-threaded workload, `dropped == 0` when a consumer is
 draining, overhead is measured and recorded.
+
+**Done.** 9 tests green on `debug` and `release`, 6 on `asan` (the preload-driven
+tests cannot run there; ASan supplies its own malloc). Measured on GCC 15.2,
+x86-64:
+
+| Measurement | Result | Budget |
+|---|---|---|
+| Added per allocator call | **31.13 ns** | 50 ns |
+| Baseline malloc/free | 3.29 ns/call | — |
+| 4-thread e2e capture | 3.9M events, 0 dropped | — |
+| 60 s, no consumer, ~118M calls | exit 0, RSS flat at 42 MB | no growth |
+
+**The ring is multi-producer, not SPSC.** This is the one real departure from the
+plan. M1.6 says to load `head` relaxed "because we are the only writer", but every
+thread in the target that calls `malloc` is a producer, and two threads claiming
+the same `head` overwrite each other's slot. Since M1.8 requires a clean run
+under a multi-threaded workload, SPSC was not implementable as written.
+
+The replacement claims slots with a CAS loop and publishes each slot through two
+flag bits in the `op` byte (commit + lap parity), which keeps `HvEvent` at 32
+bytes. `heapviz_ring.h` documents the ordering. This bumped the ABI to **v2**.
+Removing the parity check makes `ring_mpsc` fail immediately with stale
+previous-lap events, so the bit is load-bearing rather than decorative.
+
+Other deviations:
+
+- **`HEAPVIZ_WAIT_MS` added** (with a `consumer_attached` field at offset 212).
+  A short-lived target finishes and unlinks its segment before anyone can
+  attach, which made the release-build tests fail and would have made
+  `heapviz -- ./prog` miss every early allocation. The constructor now optionally
+  waits for a consumer. M2.3 needs this anyway.
+- **`HEAPVIZ_CAPACITY` and `HEAPVIZ_DISABLE`** env knobs, read once in the
+  constructor.
+- **`free` emits before calling the real `free`.** Reporting afterwards lets
+  another thread reuse the address and publish its `Malloc` first, so the
+  consumer would see two live allocations at one address.
+- **`realloc` emits `Free` then `Realloc`,** and re-reports the original block if
+  `realloc` fails, so a failed call does not look like a death.
+- **Tests found two bugs in my own test code, not the interceptor:** `getline`
+  reuses its buffer (so counting calls overcounts allocations), and `-O3` deletes
+  an alloc/write/free sequence whose contents are never read, which silently
+  removed the entire mmap path from release builds.
 
 ---
 
