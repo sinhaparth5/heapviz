@@ -50,6 +50,8 @@ promise about the ABI or the CLI surface.
   exports), built from the TUI's own colour palette.
 - Full `README.md`: goals, feature overview, architecture diagram,
   requirements, keybindings, and known limitations.
+- `assets/how-it-works.png` architecture diagram, replacing the ASCII drawing
+  that was previously inline in the README.
 
 ---
 

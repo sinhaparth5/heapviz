@@ -97,28 +97,17 @@ transitively (`strdup`, `asprintf`, `getline`, C++ `operator new`).
 
 ## How it works
 
-```
-┌─────────────────────────────────┐         ┌──────────────────────────────┐
-│  your program                   │         │  heapviz (separate process)  │
-│                                 │         │                              │
-│  malloc() ──▶ libheapviz.so     │         │   ring consumer              │
-│                    │            │         │        │                     │
-│                    │  32-byte   │         │        ▼                     │
-│                    ▼  packets   │         │   sparse grid + hash table   │
-│            ┌──────────────┐     │         │        │                     │
-│            │ SPSC ring    │─────┼────────▶│        ▼                     │
-│            │ (POSIX shm)  │     │  lock-  │   double-buffered renderer   │
-│            └──────────────┘     │  free   │        │                     │
-└─────────────────────────────────┘         │        ▼  one write() /frame │
-                                            │   your terminal              │
-              /proc/<pid>/maps  ───────────▶│                              │
-              process_vm_readv  ───────────▶│  (heap bounds, chunk headers)│
-                                            └──────────────────────────────┘
-```
-
-The two halves share nothing but a versioned 32-byte packet ABI and a ring
-header. The interceptor is a single producer; heapviz is a single consumer.
-Neither ever waits on the other.
+<div align="center">
+<img src="assets/how-it-works.png" width="820"
+     alt="Your program's malloc() calls pass through libheapviz.so, which writes 32-byte
+          packets into a lock-free SPSC ring buffer in POSIX shared memory. heapviz runs as
+          a separate process: it drains the ring into a sparse grid and hash table, then
+          into a double-buffered renderer that emits one write() per frame to your terminal.
+          It separately reads /proc/<pid>/maps and process_vm_readv for heap bounds and
+          chunk headers. The two halves share nothing but a versioned 32-byte packet ABI and
+          a ring header. The interceptor is a single producer; heapviz is a single consumer.
+          Neither ever waits on the other.">
+</div>
 
 ---
 
