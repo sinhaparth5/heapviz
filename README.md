@@ -183,8 +183,11 @@ Typing it blind works even when the echo is off.
 ## Project status
 
 Pre-alpha, and under active construction. The `LD_PRELOAD` interceptor works
-and captures allocations at about 31 ns per call; the terminal layer is
-starting. There is no usable visualisation yet.
+and captures allocations at about 31 ns per call. The terminal engine is
+complete enough to run: raw mode, a double-buffered grid, a differential
+renderer that puts one write on the wire per frame, and a paced event loop that
+handles resizing and idles at close to no CPU. `heapviz --term-check` will show
+you all of it. There is no heap visualisation yet — that is the next milestone.
 
 [**ROADMAP.md**](ROADMAP.md) tracks 209 tasks across 8 milestones, from the
 shared-memory ABI through the interceptor, sparse grid, ANSI engine,

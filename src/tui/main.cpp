@@ -5,23 +5,22 @@
  *
  * Attach/lifecycle is M2.3, so this binary cannot yet show a heap. What it can
  * do is drive the terminal layer end to end: raw mode and the alternate screen
- * (M4.1), a clipped double-buffered cell grid (M4.2), and a differential ANSI
- * streamer that puts one write(2) on the wire per frame (M4.3).
+ * (M4.1), a clipped double-buffered cell grid (M4.2), a differential ANSI
+ * streamer that puts one write(2) on the wire per frame (M4.3), and a
+ * frame-paced event loop that idles at roughly no CPU (M4.5).
  */
 
 #include "common/heapviz_abi.h"
+#include "tui/event_loop.h"
 #include "tui/framebuffer.h"
 #include "tui/renderer.h"
 #include "tui/shm_cleanup.h"
 #include "tui/terminal.h"
 
-#include <cerrno>
+#include <cstdint>
 #include <cstdio>
-#include <cstring>
-#include <ctime>
 #include <string>
 #include <string_view>
-#include <sys/ioctl.h>
 #include <unistd.h>
 
 namespace {
@@ -47,7 +46,9 @@ void print_usage() {
         "  heapviz --cleanup            remove rings left by killed targets\n"
         "\n"
         "development aids:\n"
-        "  heapviz --term-check         draw a frame and exercise teardown\n"
+        "  heapviz --term-check         run the terminal engine on a test frame\n"
+        "  heapviz --term-check --debug-timing\n"
+        "                               ...with the per-phase frame budget shown\n"
         "\n"
         "Not yet implemented: attaching to a target is ROADMAP.md M2.3, and the\n"
         "heap map itself is M3.\n");
@@ -82,12 +83,116 @@ int cleanup() {
     return 0;
 }
 
-/* Hand-check for M4.1 through M4.3, drawn with the real framebuffer and
- * renderer. The busy-wait loop is provisional: M4.5 replaces it with poll() on
- * a frame deadline. It exists so the terminal layer can be exercised against a
- * real terminal, which the pty test cannot do for a resize or an actual Ctrl-C
- * from a keyboard. */
-int term_check() {
+constexpr hv::Rgb kInk    = 0x00D8D8D8;
+constexpr hv::Rgb kMuted  = 0x00707880;
+constexpr hv::Rgb kPanel  = 0x00101418;
+constexpr hv::Rgb kAccent = 0x0058C7F3;
+constexpr hv::Rgb kWarn   = 0x00F3B158;
+
+/* Hand-check for M4.1 through M4.5, drawn through the real framebuffer,
+ * renderer and event loop. It exists so the terminal layer can be exercised
+ * against a real terminal: a pty test can drive a resize, but it cannot tell
+ * you whether the result flickered, and it cannot press Ctrl-C. */
+class TermCheckApp final : public hv::LoopApp {
+public:
+    explicit TermCheckApp(bool timing) : timing_(timing) {}
+
+    bool key(char c) override {
+        if (c == 'q') { hv::request_quit(); return false; }
+        if (c == 'a') { animate_ = !animate_; return true; }
+        if (c == 't') { timing_ = !timing_; return true; }
+        if (c >= 32 && c < 127 && keys_.size() < 32) keys_.push_back(c);
+        return true;
+    }
+
+    /* Off by default, so the skipped-frame counter shows the idle path doing
+     * its job. Pressing `a` turns it on and the fps counter climbs to the frame
+     * rate, which is the other half of the demonstration. */
+    bool animating() const override { return animate_; }
+
+    void draw(hv::Framebuffer &fb, const hv::LoopStats &s) override {
+        const int w = fb.width();
+        const int h = fb.height();
+
+        fb.clear(hv::Cell{U' ', kInk, kPanel, 0});
+        fb.box(hv::Rect{0, 0, w, h}, hv::BoxStyle::Rounded, kAccent, kPanel);
+        fb.text(3, 0, " heapviz terminal check ", kAccent, kPanel, hv::kAttrBold);
+
+        fb.text(3, 2, "Raw mode is on: keys arrive unbuffered, unechoed.",
+                kInk, kPanel);
+        fb.text(3, 3, "ISIG is kept, so Ctrl-C exits the same way q does.",
+                kInk, kPanel);
+        fb.text(3, 4, "Resize the window: the frame follows without tearing.",
+                kInk, kPanel);
+
+        /* A TrueColor sweep, which is also the widest run of same-coloured
+         * cells the pen elision will ever see. */
+        for (int x = 3; x < w - 3; ++x) {
+            const auto t = static_cast<hv::Rgb>((x * 255) / (w > 6 ? w - 6 : 1));
+            fb.put(x, 6, hv::Cell{U'█', (t << 16) | (0x80u << 8) | (255u - t),
+                                  kPanel, 0});
+        }
+
+        fb.text(3, 8, "Keys seen: ", kInk, kPanel);
+        fb.text(14, 8, keys_, kAccent, kPanel, hv::kAttrBold);
+
+        int row = 10;
+        fb.text(3, row++, animate_ ? "a: animation ON  - every frame redraws"
+                                   : "a: animation off - idle frames are skipped",
+                animate_ ? kWarn : kMuted, kPanel);
+        fb.text(3, row++, "t: toggle the timing overlay", kMuted, kPanel);
+
+        if (timing_) {
+            char line[160];
+
+            std::snprintf(line, sizeof line,
+                          "%6.1f fps   frames %-8llu drawn %-8llu skipped %-8llu"
+                          " repaints %llu",
+                          s.fps,
+                          static_cast<unsigned long long>(s.frames),
+                          static_cast<unsigned long long>(s.drawn),
+                          static_cast<unsigned long long>(s.skipped),
+                          static_cast<unsigned long long>(s.repaints));
+            fb.text(3, ++row, line, kInk, kPanel);
+
+            std::snprintf(line, sizeof line,
+                          "last  drain %5.0fus update %5.0fus draw %5.0fus"
+                          " diff %5.0fus write %5.0fus  = %6.0fus",
+                          us(s.last.drain_ns), us(s.last.update_ns),
+                          us(s.last.draw_ns), us(s.last.diff_ns),
+                          us(s.last.write_ns), us(s.last.total_ns));
+            fb.text(3, ++row, line, kMuted, kPanel);
+
+            std::snprintf(line, sizeof line,
+                          "worst drain %5.0fus update %5.0fus draw %5.0fus"
+                          " diff %5.0fus write %5.0fus  = %6.0fus",
+                          us(s.worst.drain_ns), us(s.worst.update_ns),
+                          us(s.worst.draw_ns), us(s.worst.diff_ns),
+                          us(s.worst.write_ns), us(s.worst.total_ns));
+            fb.text(3, ++row, line, kMuted, kPanel);
+
+            std::snprintf(line, sizeof line,
+                          "writes %-8llu bytes %-10llu overruns %llu",
+                          static_cast<unsigned long long>(s.writes),
+                          static_cast<unsigned long long>(s.bytes_written),
+                          static_cast<unsigned long long>(s.overruns));
+            fb.text(3, ++row, line,
+                    s.overruns != 0 ? kWarn : kMuted, kPanel);
+        }
+
+        fb.text(3, h - 2, "q or Ctrl-C to leave. Your shell should come back "
+                          "exactly as it was.", kInk, kPanel);
+    }
+
+private:
+    static double us(std::uint64_t ns) { return static_cast<double>(ns) / 1000.0; }
+
+    std::string keys_;
+    bool        animate_ = false;
+    bool        timing_  = false;
+};
+
+int term_check(bool timing) {
     hv::TerminalGuard guard;
     const hv::TermStatus st = guard.enter(STDOUT_FILENO);
     if (st != hv::TermStatus::Ok) {
@@ -95,78 +200,26 @@ int term_check() {
         return 1;
     }
 
-    winsize ws{};
-    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0 || ws.ws_col == 0) {
-        ws.ws_col = 80;
-        ws.ws_row = 24;
-    }
-    const int w = ws.ws_col;
-    const int h = ws.ws_row;
+    hv::LoopConfig cfg;
+    cfg.in_fd  = STDIN_FILENO;
+    cfg.out_fd = STDOUT_FILENO;
 
-    hv::Framebuffer fb;
-    hv::Renderer    r;
-    if (!fb.resize(w, h)) {
-        guard.restore();
-        std::fprintf(stderr, "heapviz: terminal too large or too small\n");
-        return 1;
-    }
-    r.reserve(w, h);
-
-    constexpr hv::Rgb kInk    = 0x00D8D8D8;
-    constexpr hv::Rgb kPanel  = 0x00101418;
-    constexpr hv::Rgb kAccent = 0x0058C7F3;
-
-    std::string keys;
-    bool        dirty = true;
-
-    while (!hv::quit_requested()) {
-        if (dirty) {
-            fb.clear(hv::Cell{U' ', kInk, kPanel, 0});
-            fb.box(hv::Rect{0, 0, w, h}, hv::BoxStyle::Rounded, kAccent, kPanel);
-            fb.text(3, 0, " heapviz terminal check ", kAccent, kPanel,
-                    hv::kAttrBold);
-            fb.text(3, 2, "Raw mode is on: keys arrive unbuffered, unechoed.",
-                    kInk, kPanel);
-            fb.text(3, 3, "ISIG is kept, so Ctrl-C exits the same way q does.",
-                    kInk, kPanel);
-
-            /* A TrueColor sweep, which is also the widest run of same-coloured
-             * cells the pen elision will ever see. */
-            for (int x = 3; x < w - 3; ++x) {
-                const auto t = static_cast<hv::Rgb>((x * 255) / (w > 6 ? w - 6 : 1));
-                fb.put(x, 5, hv::Cell{U'█', (t << 16) | (0x80u << 8) | (255u - t),
-                                      kPanel, 0});
-            }
-
-            fb.text(3, 7, "Keys seen: ", kInk, kPanel);
-            fb.text(14, 7, keys, kAccent, kPanel, hv::kAttrBold);
-            fb.text(3, h - 2, "q or Ctrl-C to leave. Your shell should come "
-                              "back exactly as it was.", kInk, kPanel);
-
-            r.render(fb);
-            r.flush(STDOUT_FILENO);
-            fb.swap(hv::Cell{U' ', kInk, kPanel, 0});
-            dirty = false;
-        }
-
-        char c = 0;
-        const ssize_t n = ::read(STDIN_FILENO, &c, 1);
-        if (n < 0) { if (errno == EINTR) continue; break; }
-        if (n == 0) {
-            /* VMIN=0 means read() returns immediately when no key is waiting. */
-            timespec ts{0, 10 * 1000 * 1000};
-            nanosleep(&ts, nullptr);
-            continue;
-        }
-        if (c == 'q') break;
-        if (c >= 32 && c < 127 && keys.size() < 40) keys.push_back(c);
-        dirty = true;
-    }
+    hv::EventLoop  loop(cfg);
+    TermCheckApp   app(timing);
+    const hv::LoopExit why = loop.run(app);
 
     guard.restore();
-    std::printf("heapviz: terminal restored, %zu cells in the last frame\n",
-                r.cells_examined());
-    return 0;
+
+    const hv::LoopStats &s = loop.stats();
+    std::printf("heapviz: %s after %llu frames (%llu drawn, %llu skipped, "
+                "%llu overruns), worst frame %.0f us\n",
+                hv::loop_exit_str(why),
+                static_cast<unsigned long long>(s.frames),
+                static_cast<unsigned long long>(s.drawn),
+                static_cast<unsigned long long>(s.skipped),
+                static_cast<unsigned long long>(s.overruns),
+                static_cast<double>(s.worst.total_ns) / 1000.0);
+    return why == hv::LoopExit::Quit || why == hv::LoopExit::FrameLimit ? 0 : 1;
 }
 
 } // namespace
@@ -176,7 +229,11 @@ int main(int argc, char **argv) {
         const std::string_view arg{argv[1]};
         if (arg == "--version" || arg == "-V") { print_version(); return 0; }
         if (arg == "--help" || arg == "-h")    { print_usage();   return 0; }
-        if (arg == "--term-check")             { return term_check(); }
+        if (arg == "--term-check") {
+            const bool timing = argc >= 3 &&
+                                std::string_view{argv[2]} == "--debug-timing";
+            return term_check(timing);
+        }
         if (arg == "--cleanup")                { return cleanup(); }
 
         std::fprintf(stderr, "heapviz: not implemented yet: %s\n", argv[1]);

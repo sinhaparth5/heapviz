@@ -70,6 +70,17 @@ target_link_libraries(renderer_test PRIVATE heapviz_core)
 add_test(NAME renderer COMMAND renderer_test)
 set_tests_properties(renderer PROPERTIES TIMEOUT 60)
 
+# --- Event loop and frame pacing (M4.5) ------------------------------------
+# The loop takes its fds, its terminal measurement and its write(2) as
+# parameters, so this needs no pty and no child; the real SIGWINCH path is
+# integration/event_loop_pty_test.cpp. Most assertions are wall-clock
+# measurements, hence the unusually long timeout for a unit test.
+add_executable(event_loop_test unit/event_loop_test.cpp)
+heapviz_test_target(event_loop_test)
+target_link_libraries(event_loop_test PRIVATE heapviz_core)
+add_test(NAME event_loop COMMAND event_loop_test)
+set_tests_properties(event_loop PROPERTIES TIMEOUT 60)
+
 # ===========================================================================
 # integration
 # ===========================================================================
@@ -107,6 +118,13 @@ heapviz_test_target(terminal_restore_test)
 target_link_libraries(terminal_restore_test PRIVATE heapviz_core util)
 add_test(NAME terminal_restore COMMAND terminal_restore_test)
 set_tests_properties(terminal_restore PROPERTIES TIMEOUT 60)
+
+# --- A real SIGWINCH through a real pty (M4.5) -----------------------------
+add_executable(event_loop_pty_test integration/event_loop_pty_test.cpp)
+heapviz_test_target(event_loop_pty_test)
+target_link_libraries(event_loop_pty_test PRIVATE heapviz_core util)
+add_test(NAME event_loop_pty COMMAND event_loop_pty_test)
+set_tests_properties(event_loop_pty PROPERTIES TIMEOUT 60)
 
 # --- Reaping rings left behind by SIGKILLed targets ------------------------
 add_executable(shm_cleanup_test integration/shm_cleanup_test.cpp)

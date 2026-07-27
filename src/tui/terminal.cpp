@@ -27,6 +27,7 @@ struct termios g_saved;                  /* valid whenever g_active != 0 */
 volatile sig_atomic_t g_active   = 0;
 volatile sig_atomic_t g_fd       = -1;
 volatile sig_atomic_t g_quit     = 0;
+volatile sig_atomic_t g_winch    = 0;
 volatile sig_atomic_t g_handlers = 0;
 
 /* Entry: alternate screen, hide cursor, clear, home.
@@ -69,6 +70,13 @@ void restore_now() noexcept {
  * the same one `q` takes. */
 extern "C" void hv_graceful_handler(int) noexcept {
     g_quit = 1;
+}
+
+/* SIGWINCH: the terminal changed shape. Everything the loop has to do about it
+ * -- ioctl, reallocation, a full repaint -- is unsafe here, so the handler only
+ * records that it happened. */
+extern "C" void hv_winch_handler(int) noexcept {
+    g_winch = 1;
 }
 
 /* SIGSEGV, SIGABRT, SIGBUS, SIGFPE, SIGILL: the process is going down. Restore
@@ -114,6 +122,10 @@ void install_handlers() noexcept {
     install_one(SIGINT,  hv_graceful_handler, SA_RESTART);
     install_one(SIGTERM, hv_graceful_handler, SA_RESTART);
     install_one(SIGHUP,  hv_graceful_handler, SA_RESTART);
+
+    /* Deliberately without SA_RESTART. poll(2) is never restarted either way,
+     * so the loop still wakes promptly; the flag alone would be enough. */
+    install_one(SIGWINCH, hv_winch_handler, 0);
 
     /* SA_RESETHAND makes the re-raise in hv_fatal_handler terminate us. */
     install_one(SIGSEGV, hv_fatal_handler, SA_RESETHAND);
@@ -198,5 +210,16 @@ TerminalGuard::~TerminalGuard() { restore_now(); }
 bool quit_requested() noexcept { return g_quit != 0; }
 
 void request_quit() noexcept { g_quit = 1; }
+
+/* An exchange rather than a read followed by a store. A SIGWINCH landing
+ * between those two would be cleared without ever being seen, and since the
+ * handler only ever sets the flag there is nothing to raise it again: the
+ * window is small but it strands the display at the wrong size until the user
+ * resizes a second time. */
+bool take_resize_request() noexcept {
+    return __atomic_exchange_n(&g_winch, 0, __ATOMIC_ACQ_REL) != 0;
+}
+
+void request_resize() noexcept { g_winch = 1; }
 
 } // namespace hv

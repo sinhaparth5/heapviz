@@ -72,6 +72,18 @@ promise about the ABI or the CLI surface.
   colour cost a single colour sequence, and consecutive cells need no cursor
   motion. Each frame reaches the terminal in one write, and a frame where
   nothing changed costs no output at all. TrueColor throughout.
+- Frame pacing: heapviz redraws at most 60 times a second and, when nothing has
+  changed, does not redraw at all. An idle heapviz sleeps between frames rather
+  than spinning, so watching a quiet process costs a fraction of a percent of a
+  core. Keystrokes are still picked up within one frame.
+- Resizing the terminal reflows the display without tearing or leaving debris
+  behind, and heapviz keeps running with stdin closed or redirected from
+  `/dev/null`.
+- `heapviz --term-check --debug-timing` shows where each frame's time went,
+  split into draining the ring, updating the model, drawing, diffing and
+  writing, alongside the frame rate and a count of frames that overran their
+  budget. Inside `--term-check`, `a` toggles continuous animation and `t`
+  toggles the overlay.
 - `heapviz --cleanup` removes rings left behind by targets that were killed
   with `SIGKILL`, which skips the interceptor's own cleanup. Rings belonging to
   a process that is still running are never touched, so it is safe to run

@@ -63,7 +63,7 @@ guarded by `if(NOT HEAPVIZ_ASAN)`. `interceptor_overhead` additionally only runs
 on optimised builds, because at `-O0` the interceptor costs 45-56 ns and
 straddles its own 50 ns budget.
 
-Expected test counts when everything passes: debug 13, release 14, asan 11.
+Expected test counts when everything passes: debug 15, release 16, asan 13.
 
 ## Architecture
 
@@ -136,6 +136,30 @@ never saw, and both would display a plausible half of the stream. The producer p
 store, so a non-matching magic means the constructor is still running and the
 consumer should retry rather than fail.
 
+### The TUI is one thread on a frame deadline
+
+`src/tui/event_loop.cpp` owns the only loop: drain the ring, update the model,
+draw, diff, write, then `poll(2)` on stdin until the next deadline. There is no
+render thread, which is what lets the ring stay single-consumer.
+
+The application side is the abstract `LoopApp` (`drain` / `update` / `key` /
+`animating` / `resized` / `draw`); M3's heap map will be an implementation of
+it. Everything the loop touches outside the process is a `LoopConfig` field —
+both file descriptors, `ioctl(TIOCGWINSZ)` as `size_fn`, `write(2)` as
+`writer` — which is why `tests/unit/event_loop_test.cpp` needs no terminal.
+
+Three things there are easy to break by accident:
+
+- **A frame that changes nothing must produce no bytes.** The draw, the diff and
+  the write are all skipped, and `Renderer::render` omits even the trailing SGR
+  reset. Idle cost is the feature, not an optimisation.
+- **`SIGWINCH` is only handled while a `TerminalGuard` is active**, since that is
+  what installs the handler. `tests/integration/event_loop_pty_test.cpp` exists
+  because nothing in-process notices if that coupling is severed.
+- **Buffers are reallocated at exactly one point**, the top of a frame, before
+  the drain. A resize noticed anywhere else would move storage out from under a
+  half-drawn frame.
+
 ## Naming and layout
 
 One rule runs through the whole project: **`heapviz_` / `HEAPVIZ_` marks the
@@ -170,6 +194,14 @@ one test needs several programs they share a stem and take a role suffix
 (`shm_roundtrip_writer` / `shm_roundtrip_reader`).
 
 ## Things that have bitten this codebase
+
+Wall-clock time cannot tell sleeping from spinning. Every loop that claims to
+idle cheaply hits its deadlines identically whether it slept or burned a core
+getting there, so the pacing tests compare `getrusage` against elapsed time.
+Two real bugs hid behind wall clock alone: polling an fd that is permanently
+readable, and truncating the `poll` timeout to zero milliseconds (`poll` then
+returns `0` at once, which the loop reads as "the deadline arrived", so frames
+end early *and* spin).
 
 `-O3` deletes allocations. GCC removes an alloc/write/free sequence whose
 contents are never read, which silently emptied the mmap path in release builds

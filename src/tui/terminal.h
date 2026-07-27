@@ -64,6 +64,19 @@ bool quit_requested() noexcept;
 /* Lets `q` and the signal path share one exit condition. */
 void request_quit() noexcept;
 
+/* SIGWINCH sets a flag rather than measuring the terminal in the handler:
+ * ioctl(TIOCGWINSZ) is not on POSIX's async-signal-safe list, and resizing the
+ * framebuffer from a handler would reallocate underneath a frame that is
+ * halfway drawn. The loop consumes the flag at a defined point instead.
+ *
+ * Test-and-clear, so a resize is never processed twice and one that arrives
+ * during a frame is picked up by the next. */
+bool take_resize_request() noexcept;
+
+/* Raises the same flag by hand. Lets a test drive the resize path without a
+ * pty, and lets the loop force the first measurement on startup. */
+void request_resize() noexcept;
+
 } // namespace hv
 
 #endif /* HEAPVIZ_TUI_TERMINAL_H */

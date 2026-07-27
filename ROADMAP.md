@@ -16,12 +16,12 @@ concrete enough that "done" is not a judgement call.
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
 | M3 | Sparse address representation | grid, hash table, aging | `[ ]` | 0 / 24 |
-| M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 21 / 34 |
+| M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 27 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 78 / 209**
+**Total: 84 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -609,20 +609,76 @@ prove it.
 
 ### M4.5 Event loop & frame pacing
 
-- [ ] Single-threaded loop: drain ring → update model → draw → diff → write →
+- [x] Single-threaded loop: drain ring → update model → draw → diff → write →
       sleep-to-deadline.
-- [ ] `poll()` on stdin with a timeout computed as `next_frame_deadline - now`.
+- [x] `poll()` on stdin with a timeout computed as `next_frame_deadline - now`.
       Input stays responsive and the process idles at ~0% CPU when nothing
       changes.
-- [ ] Skip the draw entirely when no events arrived, no key was pressed, and no
+- [x] Skip the draw entirely when no events arrived, no key was pressed, and no
       cell has a live animation. Idle CPU is a feature.
-- [ ] Frame budget instrumentation: measure drain / update / draw / diff / write
+- [x] Frame budget instrumentation: measure drain / update / draw / diff / write
       separately; surface as the FPS counter (and a `--debug-timing` overlay).
-- [ ] `SIGWINCH` handler sets a `volatile sig_atomic_t` flag; the loop calls
+- [x] `SIGWINCH` handler sets a `volatile sig_atomic_t` flag; the loop calls
       `ioctl(TIOCGWINSZ)`, reallocates buffers, recomputes granularity, forces a
       full repaint.
-- [ ] Resize during a frame must not tear or crash; buffers are only swapped at
+- [x] Resize during a frame must not tear or crash; buffers are only swapped at
       a defined point in the loop.
+
+#### M4.5 completion notes
+
+**The application is an interface, not a callback soup.** `LoopApp` has
+`drain`, `update`, `key`, `animating`, `resized` and `draw`; everything except
+`draw` has a do-nothing default. That is what makes the loop testable without a
+ring, a terminal or a heap map, none of which exist yet. M3 supplies the real
+implementation.
+
+**Everything the loop touches the outside world through is a parameter**: the
+two file descriptors, `ioctl(TIOCGWINSZ)` (`LoopConfig::size_fn`) and `write(2)`
+(`LoopConfig::writer`). `unit/event_loop_test.cpp` therefore needs no pty and no
+child process, which is why it lives in `unit/` despite being mostly wall-clock
+measurement.
+
+**Waiting is not idling, and only CPU time tells them apart.** Two of the
+scenarios compare `getrusage` against elapsed wall time. A loop that polls an
+exhausted stdin, or one that truncates its `poll` timeout to zero milliseconds,
+hits every deadline on schedule and burns a core doing it — the wall clock reads
+identical in both cases. This was not hypothetical: `/dev/null` and a pipe with
+no writers report exhaustion differently (a zero-byte `read` versus `POLLHUP`),
+are handled by different branches, and the first version of the test exercised
+only one of them.
+
+**Rounding the poll timeout up is load-bearing.** `poll(2)` with a timeout of
+zero returns immediately with `rc == 0`, which the loop cannot distinguish from
+a real timeout, so a truncating conversion ends every frame roughly a
+millisecond early — a 20% overshoot at 200 fps that no correctness assertion
+would notice.
+
+**There is deliberately no idle back-off.** Stretching the frame period after a
+quiet spell was considered and dropped: a skipped frame costs a `poll` and two
+atomic loads, so 60 a second is already under a tenth of a percent of a core,
+and backing off would trade first-event latency for a saving too small to
+measure.
+
+**`SIGWINCH` is only handled if a `TerminalGuard` is active**, because that is
+what installs the handler. The coupling is real and easy to break, so
+`integration/event_loop_pty_test.cpp` runs the loop on a real pty and resizes it
+from outside with `TIOCSWINSZ`; a loop that forgot the guard, or a signal that
+never interrupted `poll`, both show up as the child never reporting.
+
+**A resize repaints every cell rather than diffing.** `Framebuffer::resize`
+clears both buffers, so a plain diff would emit only the non-blank cells and
+leave the previous frame's remains in whatever part of the screen just appeared.
+Both resize tests assert `cells_emitted() == cells_examined() == w * h`, which is
+the only formulation that fails when `full_repaint` is dropped.
+
+Ten mutations tried, ten caught. Three initially survived, all of them test
+gaps: the `POLLHUP` branch was never reached, the `read`-returns-zero branch was
+never reached, and the pacing bound was loose enough to accept a frame that
+ended early.
+
+**Not done here:** the minimum-size check stops the loop with `LoopExit::TooSmall`
+rather than drawing a message. M4.4 owns the readable-refusal UI; the loop's job
+is only to stop before it renders into six columns.
 
 ### M4.6 Verification
 
