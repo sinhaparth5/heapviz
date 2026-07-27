@@ -27,7 +27,7 @@ Heap behaviour you normally infer from numbers (churn, fragmentation,
 allocator reuse patterns, leaks) becomes something you just *look at*.
 
 <div align="center">
-<img src="assets/ui-mockup.png" alt="heapviz interface" width="720">
+<img src="assets/heapviz-img.png" alt="heapviz interface" width="720">
 <br>
 <sub><i>Design target. heapviz is pre-alpha and this interface is not yet implemented.<br>
 See <a href="ROADMAP.md">ROADMAP.md</a> for what's actually built.</i></sub>
