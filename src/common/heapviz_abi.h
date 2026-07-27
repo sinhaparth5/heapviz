@@ -18,8 +18,8 @@
  * silent cross-process corruption.
  */
 
-#ifndef HEAPVIZ_ABI_H
-#define HEAPVIZ_ABI_H
+#ifndef HEAPVIZ_COMMON_ABI_H
+#define HEAPVIZ_COMMON_ABI_H
 
 #include <stddef.h>
 #include <stdint.h>
@@ -319,4 +319,4 @@ HV_STATIC_ASSERT(sizeof(HvEvent) % 8 == 0, "HvEvent needs 8-byte alignment");
 } /* extern "C" */
 #endif
 
-#endif /* HEAPVIZ_ABI_H */
+#endif /* HEAPVIZ_COMMON_ABI_H */

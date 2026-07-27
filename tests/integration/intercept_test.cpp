@@ -15,7 +15,7 @@
  * and there is nothing left to read.
  */
 
-#include "ring_attach.h"
+#include "support/ring_attach.h"
 
 #include <cstdio>
 #include <cstdlib>

@@ -34,14 +34,14 @@ Run one test, or a subset:
 
 ```bash
 ctest --preset release -R ring_mpsc --output-on-failure
-ctest --preset release -R 'e2e|intercept' -V
+ctest --preset release -R 'intercept|transitive' -V
 ```
 
 Test targets are also plain executables and are usually faster to debug directly:
 
 ```bash
-./build/debug/ring_test 4 10000000                # producers, events
-./build/release/intercept_e2e ./build/release/libheapviz.so ./build/release/churn
+./build/debug/ring_mpsc_test 4 10000000           # producers, events
+./build/release/intercept_test ./build/release/libheapviz.so ./build/release/churn
 ```
 
 Exercise the interceptor by hand:
@@ -63,7 +63,7 @@ guarded by `if(NOT HEAPVIZ_ASAN)`. `interceptor_overhead` additionally only runs
 on optimised builds, because at `-O0` the interceptor costs 45-56 ns and
 straddles its own 50 ns budget.
 
-Expected test counts when everything passes: debug 8, release 9, asan 6.
+Expected test counts when everything passes: debug 11, release 12, asan 9.
 
 ## Architecture
 
@@ -81,8 +81,8 @@ Changing anything in that header is a wire-protocol change. Bump
 the words "ABI break", the old and new version numbers, and a note that both
 halves must be rebuilt. Users can have mismatched halves installed.
 
-`tests/abi_layout_c.c` and `tests/abi_layout_cxx.cpp` compile the same dump
-header in both languages and the test requires byte-identical output.
+`tests/unit/abi_layout_c.c` and `tests/unit/abi_layout_cxx.cpp` compile the
+same dump header in both languages and require byte-identical output.
 
 ### The ring is multi-producer, not SPSC
 
@@ -109,7 +109,7 @@ check makes `ring_mpsc` fail immediately, which is the intended property.
 libstdc++, whose static initialisers allocate, and this library *is* the
 allocator inside the target process. Keeping it C makes the guarantee structural
 rather than a linker flag someone can drop; `preload_no_libstdcxx` enforces it,
-and `preload_loads` exists so that check cannot pass vacuously (`ldd` prints
+and `preload_load` exists so that check cannot pass vacuously (`ldd` prints
 "statically linked" for both a clean .so and a broken one).
 
 Consequences to respect when editing that file:
@@ -127,12 +127,45 @@ Consequences to respect when editing that file:
 
 ### Consumer attach
 
-`tests/ring_attach.h` is the reference implementation of the consumer side and
+`tests/support/ring_attach.h` is the reference implementation of the consumer side and
 mirrors what the TUI will do in M2.3: poll for the segment, map the header
 alone, check magic then ABI version, read `capacity`, map the whole ring, and
 set `consumer_attached`. The producer publishes `magic` last with a release
 store, so a non-matching magic means the constructor is still running and the
 consumer should retry rather than fail.
+
+## Naming and layout
+
+One rule runs through the whole project: **`heapviz_` / `HEAPVIZ_` marks the
+public surface, `hv_` / `HV_` marks internals.**
+
+| | Public | Internal |
+|---|---|---|
+| C functions | `heapviz_preload_abi_version` (exported, `HV_EXPORT`) | `hv_ring_push`, `hv_emit` (`static` or hidden) |
+| Macros | `HEAPVIZ_ABI_MAGIC`, `HEAPVIZ_ABI_VERSION` (wire contract) | `HV_OP_MASK`, `HV_CACHELINE` |
+| Headers | `src/common/heapviz_abi.h`, `heapviz_ring.h` (vendorable) | `src/tui/renderer.h`, `terminal.h` |
+
+So a `static` function must never wear `heapviz_`, and anything a separately
+compiled binary depends on must never wear `hv_`. The C++ side sits inside
+`namespace hv` and needs no prefix: types are `PascalCase` (`Framebuffer`,
+`Cell`), functions and methods are `snake_case`, and constants are `kCamelCase`.
+Include guards are `HEAPVIZ_<DIR>_<FILE>_H`.
+
+`tests/` is grouped by kind, and the grouping is the answer to "where does my
+new test go":
+
+| Directory | Holds |
+|---|---|
+| `unit/` | In-process and fast. No child processes, no `LD_PRELOAD`. |
+| `integration/` | Crosses a process boundary: `fork`/`exec`, a pty, or the preload. |
+| `fixtures/` | Programs that exist to be measured, not to assert. |
+| `support/` | Shared helpers, no `main()`. Included as `"support/..."`. |
+| `cmake/` | CTest driver scripts, each named after the test it drives. |
+
+A test's CTest name is its file stem with any `_test` suffix removed, so
+`ctest -R renderer` and `tests/unit/renderer_test.cpp` always correspond. Where
+one test needs several programs they share a stem and take a role suffix
+(`shm_roundtrip_writer` / `shm_roundtrip_reader`).
 
 ## Things that have bitten this codebase
 

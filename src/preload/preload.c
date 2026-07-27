@@ -528,7 +528,7 @@ HV_EXPORT uint32_t heapviz_preload_abi_version(void) {
 }
 
 __attribute__((constructor(101)))
-static void heapviz_preload_init(void) {
+static void hv_preload_init(void) {
     const char *disable = getenv("HEAPVIZ_DISABLE");
     if (disable != NULL && disable[0] == '1') {
         g_enabled = 0;
@@ -541,6 +541,6 @@ static void heapviz_preload_init(void) {
 }
 
 __attribute__((destructor))
-static void heapviz_preload_fini(void) {
+static void hv_preload_fini(void) {
     hv_ring_teardown();
 }

@@ -42,8 +42,8 @@
  * handful of nanoseconds between claiming a slot and committing it.
  */
 
-#ifndef HEAPVIZ_RING_H
-#define HEAPVIZ_RING_H
+#ifndef HEAPVIZ_COMMON_RING_H
+#define HEAPVIZ_COMMON_RING_H
 
 #include "common/heapviz_abi.h"
 
@@ -166,4 +166,4 @@ HV_INLINE uint64_t hv_ring_used(const HvRingHeader *h) {
 } /* extern "C" */
 #endif
 
-#endif /* HEAPVIZ_RING_H */
+#endif /* HEAPVIZ_COMMON_RING_H */

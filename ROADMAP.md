@@ -272,7 +272,7 @@ reported.
       triggers `mmap` not `brk`), and multi-threaded.
 - [x] Standalone `tests/ring_test`: two threads, 10M events, assert zero loss
       and correct ordering under TSan.
-- [x] `tests/overhead_bench`: same workload with and without `LD_PRELOAD`,
+- [x] `tests/integration/interceptor_overhead_test.c`: same workload with and without `LD_PRELOAD`,
       report ns/alloc delta. Target: under 50 ns added per allocation. Record
       the measured number here: `______`.
 - [x] Run the churn example under `LD_PRELOAD` for 60 s with no consumer
@@ -497,7 +497,7 @@ it would have without us.
 `tcgetattr` succeeds, not after `tcsetattr`. The other ordering leaves a window
 where a signal arriving mid-`enter()` strands the terminal in raw mode.
 
-Verified by `tests/terminal_test.cpp`, which allocates a pty and runs each exit
+Verified by `tests/integration/terminal_restore_test.cpp`, which allocates a pty and runs each exit
 path in a child attached to it, checking both the bytes that reached the
 terminal and the termios left behind. All five guards were mutation-tested.
 One mutation (removing `std::set_terminate`) initially went undetected, because
@@ -536,7 +536,7 @@ byte, so a decoding bug shows on screen rather than hanging the renderer.
 Every code point is assumed one column wide, which holds for ASCII and the
 block-drawing glyphs the design uses.
 
-Verified by `tests/framebuffer_test.cpp`, which counts global `operator new`
+Verified by `tests/unit/framebuffer_test.cpp`, which counts global `operator new`
 calls across ten frames of drawing and requires zero (ground rule #5). Eight
 mutations were tried; three initially went undetected and each exposed a real
 gap in the test rather than in the code: the overflow case used origin 0 where
@@ -591,7 +591,7 @@ still passed.
 Nine mutations tried. Two initially survived. One was a genuine test gap (the
 short-write loop above). The other, dropping `cur_valid_ = false` past the last
 column, is semantically equivalent today and is documented as such in
-`renderer.cpp`: an impossible column can never match a valid target, so the
+`src/tui/renderer.cpp`: an impossible column can never match a valid target, so the
 renderer emits a move either way. The line is kept as a guard for when
 `move_to()` learns relative motion, and the test says plainly that it does not
 prove it.

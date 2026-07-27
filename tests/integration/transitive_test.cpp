@@ -10,7 +10,7 @@
  * (strdup, asprintf, getline, operator new) is escaping interception.
  */
 
-#include "ring_attach.h"
+#include "support/ring_attach.h"
 
 #include <cstdio>
 #include <cstdlib>
