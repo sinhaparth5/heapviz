@@ -12,6 +12,7 @@
 #include "common/heapviz_abi.h"
 #include "tui/framebuffer.h"
 #include "tui/renderer.h"
+#include "tui/shm_cleanup.h"
 #include "tui/terminal.h"
 
 #include <cerrno>
@@ -43,11 +44,42 @@ void print_usage() {
         "  heapviz --version            print version and ABI details\n"
         "  heapviz --help               this message\n"
         "\n"
+        "  heapviz --cleanup            remove rings left by killed targets\n"
+        "\n"
         "development aids:\n"
         "  heapviz --term-check         draw a frame and exercise teardown\n"
         "\n"
         "Not yet implemented: attaching to a target is ROADMAP.md M2.3, and the\n"
         "heap map itself is M3.\n");
+}
+
+/* SIGKILL skips the interceptor's destructor, so a killed target leaves its ring
+ * behind. Segments whose producer is still running are never touched, so this is
+ * safe to run while other targets are being profiled. */
+int cleanup() {
+    const auto segments = hv::list_segments();
+    if (segments.empty()) {
+        std::printf("heapviz: no segments found\n");
+        return 0;
+    }
+
+    int live = 0;
+    for (const auto &s : segments) {
+        if (s.owner_alive) {
+            ++live;
+            std::printf("  keeping %-28s pid %-7d %6.1f MiB  (still running)\n",
+                        s.name.c_str(), s.pid,
+                        static_cast<double>(s.bytes) / (1024.0 * 1024.0));
+        }
+    }
+
+    std::uint64_t freed = 0;
+    const int removed = hv::reap_stale_segments(false, &freed);
+
+    std::printf("heapviz: removed %d stale segment%s (%.1f MiB), kept %d live\n",
+                removed, removed == 1 ? "" : "s",
+                static_cast<double>(freed) / (1024.0 * 1024.0), live);
+    return 0;
 }
 
 /* Hand-check for M4.1 through M4.3, drawn with the real framebuffer and
@@ -145,6 +177,7 @@ int main(int argc, char **argv) {
         if (arg == "--version" || arg == "-V") { print_version(); return 0; }
         if (arg == "--help" || arg == "-h")    { print_usage();   return 0; }
         if (arg == "--term-check")             { return term_check(); }
+        if (arg == "--cleanup")                { return cleanup(); }
 
         std::fprintf(stderr, "heapviz: not implemented yet: %s\n", argv[1]);
         std::fprintf(stderr, "heapviz: try --help\n");

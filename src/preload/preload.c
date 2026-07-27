@@ -307,7 +307,7 @@ static void hv_wait_for_consumer(HvRingHeader *h) {
 
     while (budget_ms > 0) {
         struct timespec ts;
-        if (atomic_load_explicit(&h->consumer_attached, memory_order_acquire) != 0u)
+        if (atomic_load_explicit(&h->consumer_pid, memory_order_acquire) != 0u)
             return;
         ts.tv_sec = 0;
         ts.tv_nsec = 500000L; /* 0.5 ms */

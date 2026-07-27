@@ -70,8 +70,18 @@ inline HvRingHeader *attach(std::int32_t pid, std::uint64_t &bytes_out,
         if (full == MAP_FAILED) return nullptr;
 
         auto *ring = static_cast<HvRingHeader *>(full);
-        /* Release the target if it was started with HEAPVIZ_WAIT_MS. */
-        ring->consumer_attached.store(1u, std::memory_order_release);
+
+        /* Claim the ring, which also releases a target started with
+         * HEAPVIZ_WAIT_MS. Exclusive by design: `tail` is one cursor, so a
+         * second consumer would advance it past events we never copied out. */
+        std::uint32_t owner = 0;
+        if (hv_ring_claim(ring, static_cast<std::uint32_t>(getpid()), &owner) == 0) {
+            std::fprintf(stderr,
+                         "target %d is already being watched by pid %u\n",
+                         pid, owner);
+            munmap(full, static_cast<std::size_t>(bytes_out));
+            return nullptr;
+        }
         return ring;
     }
     return nullptr;

@@ -69,7 +69,8 @@ target_link_libraries(heapviz_preload PRIVATE heapviz_abi dl pthread rt)
 add_library(heapviz_core STATIC
   src/tui/terminal.cpp
   src/tui/framebuffer.cpp
-  src/tui/renderer.cpp)
+  src/tui/renderer.cpp
+  src/tui/shm_cleanup.cpp)
 target_compile_options(heapviz_core PRIVATE ${HEAPVIZ_WARNINGS})
 target_link_libraries(heapviz_core PUBLIC heapviz_abi)
 

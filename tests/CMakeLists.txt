@@ -58,6 +58,11 @@ target_link_libraries(framebuffer_test PRIVATE heapviz_core)
 add_test(NAME framebuffer COMMAND framebuffer_test)
 set_tests_properties(framebuffer PROPERTIES TIMEOUT 60)
 
+# --- Single-consumer enforcement (ABI v3) ----------------------------------
+add_executable(consumer_claim_test unit/consumer_claim_test.cpp)
+heapviz_test_target(consumer_claim_test)
+add_test(NAME consumer_claim COMMAND consumer_claim_test)
+
 # --- Differential ANSI streamer (M4.3) -------------------------------------
 add_executable(renderer_test unit/renderer_test.cpp)
 heapviz_test_target(renderer_test)
@@ -102,6 +107,13 @@ heapviz_test_target(terminal_restore_test)
 target_link_libraries(terminal_restore_test PRIVATE heapviz_core util)
 add_test(NAME terminal_restore COMMAND terminal_restore_test)
 set_tests_properties(terminal_restore PROPERTIES TIMEOUT 60)
+
+# --- Reaping rings left behind by SIGKILLed targets ------------------------
+add_executable(shm_cleanup_test integration/shm_cleanup_test.cpp)
+heapviz_test_target(shm_cleanup_test)
+target_link_libraries(shm_cleanup_test PRIVATE heapviz_core)
+add_test(NAME shm_cleanup COMMAND shm_cleanup_test)
+set_tests_properties(shm_cleanup PROPERTIES TIMEOUT 60)
 
 # --- End-to-end: real LD_PRELOAD interception across a process boundary ----
 add_executable(intercept_test integration/intercept_test.cpp)
@@ -150,4 +162,4 @@ endif()
 
 add_test(NAME tui_version COMMAND heapviz_tui --version)
 set_tests_properties(tui_version PROPERTIES
-  PASS_REGULAR_EXPRESSION "ABI v2, 32-byte events, 256-byte ring header")
+  PASS_REGULAR_EXPRESSION "ABI v3, 32-byte events, 256-byte ring header")

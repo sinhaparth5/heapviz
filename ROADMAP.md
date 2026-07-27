@@ -847,6 +847,36 @@ the inspector panel.** This de-risks M2 considerably.
 start? The header bar says `Active Arena: Main`, which suggests a switcher.
 **Recommendation: parse and label all arenas, visualise main only in v0.1.**
 
+**D5. Recovering from dropped events.** *(supersedes part of D2.)* A full ring
+drops the event and bumps a counter, per ground rule #2. But the TUI rebuilds
+its chunk table by replaying Malloc/Free, so a dropped `Free` leaves a chunk
+live forever (a phantom leak) and a dropped `Malloc` orphans a later `Free`.
+There is no resync, so after one overflow the model is wrong for the rest of
+the session. This directly undermines M5.5 leak detection: an invented leak is
+indistinguishable from a real one. **D2 is therefore mis-framed** - M2.2's
+`process_vm_readv` heap walk is not "enrichment for the inspector panel", it is
+the only ground-truth resync available, and it should be scheduled as the
+recovery path. **Recommendation: interim, the consumer baselines `dropped` at
+attach and banners the UI as degraded the moment it increases; M2.2 becomes the
+real fix.** No ABI support needed for the interim - `dropped` already carries
+the signal.
+
+**D6. Default ring capacity vs process trees.** `HV_DEFAULT_CAPACITY` is 1 Mi
+slots, 32 MiB of tmpfs per target. `LD_PRELOAD` is inherited across `exec`, so
+`heapviz -- make -j8` gives every spawned compiler its own 32 MiB segment, most
+never read by anyone. At the measured ~2M events/sec, 1 Mi slots buys 500 ms of
+buffer where 256 Ki buys 125 ms, still around eight frames at 60 FPS.
+**Recommendation: drop the default to 256 Ki and let `HEAPVIZ_CAPACITY` raise
+it.** Not yet done; interacts with D5, since a smaller ring drops sooner.
+
+**D7. Whether to follow forked children.** `hv_atfork_child` nulls the ring
+pointer, so a `fork`-only child emits nothing, while a `fork`+`exec` child runs
+the constructor again and gets its own segment nobody reads. Neither behaviour
+is wrong but the asymmetry is undocumented, and no test covers `fork` at all
+despite `pthread_atfork` being subtle. **Recommendation: document
+parent-process-only as the supported scope for v0.1, add a fork test, and treat
+following children as a later feature.**
+
 **D4. `ISIG` in raw mode.** Keeping it means Ctrl-C works conventionally;
 clearing it means `q` is the only exit. **Recommendation: keep `ISIG`**, and
 handle `SIGINT` with the same clean teardown as `q`.

@@ -72,10 +72,22 @@ promise about the ABI or the CLI surface.
   colour cost a single colour sequence, and consecutive cells need no cursor
   motion. Each frame reaches the terminal in one write, and a frame where
   nothing changed costs no output at all. TrueColor throughout.
+- `heapviz --cleanup` removes rings left behind by targets that were killed
+  with `SIGKILL`, which skips the interceptor's own cleanup. Rings belonging to
+  a process that is still running are never touched, so it is safe to run
+  during a profiling session.
 - README notes `reset` / `stty sane` for the one case nothing can guard
   against, `kill -9`.
 
 ### Changed
+
+- **ABI break: `HEAPVIZ_ABI_VERSION` 2 to 3.** Both halves must be rebuilt
+  together. Only one heapviz can watch a target at a time, and a second one now
+  says so and exits instead of attaching. Previously both would attach and each
+  would silently see roughly half the events, because they shared one read
+  cursor with nothing arbitrating it. The ring header's `consumer_attached`
+  flag became `consumer_pid`, claimed with a compare-and-swap; same offset and
+  width, different meaning.
 
 - **ABI break: `HEAPVIZ_ABI_VERSION` 1 to 2.** Both `libheapviz.so` and the
   `heapviz` binary must be rebuilt together. The v1 ring assumed a single

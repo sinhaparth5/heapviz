@@ -155,6 +155,53 @@ HV_INLINE uint32_t hv_ring_drain(HvRingHeader *h, HvEvent *out, uint32_t max) {
     return n;
 }
 
+/* ------------------------------------------------------------------ */
+/* Consumer ownership                                                  */
+/*                                                                     */
+/* `tail` is a single cursor with no ownership of its own, so two       */
+/* consumers draining one ring would each advance it past events the    */
+/* other never copied out. Both would show a plausible-looking half of  */
+/* the stream with no error anywhere. The claim below turns that into   */
+/* a refused attach.                                                    */
+/* ------------------------------------------------------------------ */
+
+/* Takes ownership for `pid`. Returns 1 on success, 0 if another consumer holds
+ * it, in which case `*owner_out` (when non-NULL) receives that consumer's pid
+ * so the caller can name it. */
+HV_INLINE int hv_ring_claim(HvRingHeader *h, uint32_t pid, uint32_t *owner_out) {
+    uint32_t expected = 0u;
+    if (HV_CAS_WEAK(&h->consumer_pid, &expected, pid,
+                    HV_MO_RELEASE, HV_MO_ACQUIRE)) {
+        return 1;
+    }
+    /* A weak CAS may fail spuriously, in which case `expected` is still 0 and
+     * nobody actually owns the ring. Retry once with a strong-enough loop
+     * rather than reporting a phantom owner. */
+    while (expected == 0u) {
+        if (HV_CAS_WEAK(&h->consumer_pid, &expected, pid,
+                        HV_MO_RELEASE, HV_MO_ACQUIRE)) {
+            return 1;
+        }
+    }
+    if (owner_out != NULL) *owner_out = expected;
+    return 0;
+}
+
+/* Releases a claim held by `pid`. A consumer that dies without calling this
+ * leaves the ring claimed; hv_ring_owner_alive lets the next one break a claim
+ * whose owner is gone. */
+HV_INLINE void hv_ring_release(HvRingHeader *h, uint32_t pid) {
+    uint32_t expected = pid;
+    (void)HV_CAS_WEAK(&h->consumer_pid, &expected, 0u,
+                      HV_MO_RELEASE, HV_MO_RELAXED);
+}
+
+/* Force-clears a stale claim. Only call after confirming the owning pid is
+ * gone; the caller owns that check because this header cannot make syscalls. */
+HV_INLINE void hv_ring_break_claim(HvRingHeader *h) {
+    HV_STORE(&h->consumer_pid, 0u, HV_MO_RELEASE);
+}
+
 /* Events claimed but not yet consumed. Drives the "Telemetry Ring" metric. */
 HV_INLINE uint64_t hv_ring_used(const HvRingHeader *h) {
     const uint64_t head = HV_LOAD(&h->head, HV_MO_RELAXED);

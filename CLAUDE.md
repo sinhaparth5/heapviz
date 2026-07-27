@@ -52,8 +52,8 @@ LD_PRELOAD=./build/release/libheapviz.so ./build/release/churn --threads 4 --sec
 
 Environment variables the interceptor reads: `HEAPVIZ_CAPACITY` (ring slots,
 power of two, at least 1024), `HEAPVIZ_DISABLE`, and `HEAPVIZ_WAIT_MS` (block in
-the constructor until a consumer sets `consumer_attached`, so a short-lived
-target cannot exit and unlink its segment before anyone attaches).
+the constructor until a consumer claims the ring, so a short-lived target
+cannot exit and unlink its segment before anyone attaches).
 
 ### Preset differences that matter
 
@@ -63,7 +63,7 @@ guarded by `if(NOT HEAPVIZ_ASAN)`. `interceptor_overhead` additionally only runs
 on optimised builds, because at `-O0` the interceptor costs 45-56 ns and
 straddles its own 50 ns budget.
 
-Expected test counts when everything passes: debug 11, release 12, asan 9.
+Expected test counts when everything passes: debug 13, release 14, asan 11.
 
 ## Architecture
 
@@ -127,10 +127,12 @@ Consequences to respect when editing that file:
 
 ### Consumer attach
 
-`tests/support/ring_attach.h` is the reference implementation of the consumer side and
-mirrors what the TUI will do in M2.3: poll for the segment, map the header
-alone, check magic then ABI version, read `capacity`, map the whole ring, and
-set `consumer_attached`. The producer publishes `magic` last with a release
+`tests/support/ring_attach.h` is the reference implementation of the consumer
+side and mirrors what the TUI will do in M2.3: poll for the segment, map the
+header alone, check magic then ABI version, read `capacity`, map the whole
+ring, and claim it with `hv_ring_claim`. The claim is exclusive because `tail`
+is a single cursor: two consumers would each advance it past events the other
+never saw, and both would display a plausible half of the stream. The producer publishes `magic` last with a release
 store, so a non-matching magic means the constructor is still running and the
 consumer should retry rather than fail.
 

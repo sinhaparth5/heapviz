@@ -89,8 +89,16 @@ extern "C" {
  * publishes each slot independently through two flag bits in the `op` byte, so
  * the consumer can tell a written slot from one that is still in flight.
  * HvEvent and HvRingHeader keep their sizes; `op` gained the flag bits and the
- * header's reserved tail gained `capacity_log2`. */
-#define HEAPVIZ_ABI_VERSION 2u
+ * header's reserved tail gained `capacity_log2`.
+ *
+ * v3: single-consumer enforcement.
+ *
+ * `consumer_attached` (a flag anyone could set) became `consumer_pid` (a CAS
+ * claim). Same offset, same width, different meaning, which is exactly the kind
+ * of change a version number exists for: a v2 consumer would store 1 over a v3
+ * consumer's pid and both would then drain the same `tail`, each silently
+ * seeing half the events. */
+#define HEAPVIZ_ABI_VERSION 3u
 
 #define HV_CACHELINE 64u
 
@@ -203,12 +211,20 @@ typedef struct HvRingHeader {
     HV_ATOMIC(uint64_t) total_events;
     HV_ATOMIC(uint32_t) producer_exited;
 
-    /* Set by the consumer once it has mapped the region. A producer started
-     * with HEAPVIZ_WAIT_MS blocks in its constructor until it sees this, so a
-     * short-lived target cannot run to completion and unlink the segment before
-     * anyone attaches. Consumer-write / producer-read, but it shares block 3
-     * because it is touched exactly once per process, not per event. */
-    HV_ATOMIC(uint32_t) consumer_attached;
+    /* Zero when nobody is watching, otherwise the pid of the single consumer
+     * that owns the ring. Claimed with a CAS (hv_ring_claim), not a plain
+     * store: `tail` is one cursor, so two consumers draining at once would each
+     * advance it past events the other never saw, and both would silently
+     * display half the stream. The claim makes the second attach fail loudly
+     * instead.
+     *
+     * A producer started with HEAPVIZ_WAIT_MS blocks in its constructor until
+     * this is non-zero, so a short-lived target cannot run to completion and
+     * unlink the segment before anyone attaches.
+     *
+     * Consumer-write / producer-read, but it shares block 3 because it is
+     * touched once per process rather than per event. */
+    HV_ATOMIC(uint32_t) consumer_pid;
 } HvRingHeader;
 
 /* ------------------------------------------------------------------ */
@@ -303,7 +319,7 @@ HV_STATIC_ASSERT(offsetof(HvRingHeader, tail)            == 128, "tail @ 128");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, dropped)         == 192, "dropped @ 192");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, total_events)    == 200, "total_events @ 200");
 HV_STATIC_ASSERT(offsetof(HvRingHeader, producer_exited) == 208, "producer_exited @ 208");
-HV_STATIC_ASSERT(offsetof(HvRingHeader, consumer_attached) == 212, "consumer_attached @ 212");
+HV_STATIC_ASSERT(offsetof(HvRingHeader, consumer_pid) == 212, "consumer_pid @ 212");
 
 /* head and tail on separate cache lines - the whole point of the padding. */
 HV_STATIC_ASSERT(offsetof(HvRingHeader, tail) - offsetof(HvRingHeader, head)
