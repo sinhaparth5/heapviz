@@ -68,6 +68,10 @@ promise about the ABI or the CLI surface.
   drawing API (text, lines, boxes, fills), and UTF-8 decoding. Buffers are
   sized when the terminal resizes and reused for every frame after that, so
   drawing a frame allocates nothing.
+- Differential renderer: only cells that changed are redrawn, runs of one
+  colour cost a single colour sequence, and consecutive cells need no cursor
+  motion. Each frame reaches the terminal in one write, and a frame where
+  nothing changed costs no output at all. TrueColor throughout.
 - README notes `reset` / `stty sane` for the one case nothing can guard
   against, `kill -9`.
 

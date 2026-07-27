@@ -16,12 +16,12 @@ concrete enough that "done" is not a judgement call.
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
 | M3 | Sparse address representation | grid, hash table, aging | `[ ]` | 0 / 24 |
-| M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 12 / 34 |
+| M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 21 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 69 / 209**
+**Total: 78 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -548,21 +548,53 @@ from `resize()`.
 
 This is the performance core. Each item below is worth milliseconds.
 
-- [ ] Cell-by-cell compare Front vs Back; skip unchanged.
-- [ ] Pen state tracking: remember the last emitted fg/bg/attrs and only
+- [x] Cell-by-cell compare Front vs Back; skip unchanged.
+- [x] Pen state tracking: remember the last emitted fg/bg/attrs and only
       emit an SGR sequence when it actually changes. A naive renderer emits
       ~20 bytes of colour per cell; this cuts output by an order of magnitude.
-- [ ] Cursor position tracking: only emit `\033[Y;XH` when the next changed
+- [x] Cursor position tracking: only emit `\033[Y;XH` when the next changed
       cell is not immediately after the last written one.
-- [ ] TrueColor: `\033[38;2;R;G;Bm` (fg), `\033[48;2;R;G;Bm` (bg).
-- [ ] Integer-to-ASCII by hand into the output buffer. No `snprintf` per cell.
-- [ ] UTF-8 encoder for `char32_t` (the block glyphs are 3 bytes each).
-- [ ] Output buffer is a single pre-sized `std::vector<char>`, reserved once,
+- [x] TrueColor: `\033[38;2;R;G;Bm` (fg), `\033[48;2;R;G;Bm` (bg).
+- [x] Integer-to-ASCII by hand into the output buffer. No `snprintf` per cell.
+- [x] UTF-8 encoder for `char32_t` (the block glyphs are 3 bytes each).
+- [x] Output buffer is a single pre-sized `std::vector<char>`, reserved once,
       `.clear()`ed per frame; capacity is retained, so no allocation.
-- [ ] One `write(STDOUT_FILENO, buf, len)` per frame, looped on partial writes
+- [x] One `write(STDOUT_FILENO, buf, len)` per frame, looped on partial writes
       and `EINTR`.
-- [ ] Reset SGR (`\033[0m`) at end of frame so a crash mid-scroll does not tint
+- [x] Reset SGR (`\033[0m`) at end of frame so a crash mid-scroll does not tint
       the user's shell.
+
+#### M4.3 completion notes
+
+**Producing the bytes is separated from writing them.** `render()` fills a
+buffer, `flush()` performs the single write. That is what makes the wire format
+testable without a terminal: the tests assert on exact byte sequences rather
+than on what appeared on a screen.
+
+**An idle frame emits nothing at all, not even the SGR reset.** The epilogue is
+skipped when no cell changed, so "nothing happened" costs zero bytes and zero
+syscalls, which M4.5's idle-CPU goal depends on.
+
+**Attribute changes go through a full reset.** There is no portable code to
+turn off just one attribute, so any change to `attrs` emits `\033[0m` and
+re-applies colour. Colour-only changes, the common case in a heatmap, skip
+that.
+
+**`flush()` takes an optional writer.** A blocking fd transfers everything
+unless a signal lands mid-write, so the partial-write loop cannot be reached
+reliably from outside the process. The seam lets a test supply a writer that
+returns short and one that returns `EINTR`. This was added because the first
+attempt at the test, a payload larger than a pipe buffer, could not fail: a
+blocking pipe write delivers every byte, so the mutation that deleted the loop
+still passed.
+
+Nine mutations tried. Two initially survived. One was a genuine test gap (the
+short-write loop above). The other, dropping `cur_valid_ = false` past the last
+column, is semantically equivalent today and is documented as such in
+`renderer.cpp`: an impossible column can never match a valid target, so the
+renderer emits a move either way. The line is kept as a guard for when
+`move_to()` learns relative motion, and the test says plainly that it does not
+prove it.
 
 ### M4.4 Capability detection & fallback
 

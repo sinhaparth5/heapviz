@@ -3,19 +3,24 @@
  * Copyright (C) 2026 Parth Sinha
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Attach/lifecycle is M2.3 and the framebuffer is M4.2, so this binary cannot
- * yet show a heap. What it can do is prove the terminal layer (M4.1): enter raw
- * mode and the alternate screen, and give the terminal back on every exit path.
+ * Attach/lifecycle is M2.3, so this binary cannot yet show a heap. What it can
+ * do is drive the terminal layer end to end: raw mode and the alternate screen
+ * (M4.1), a clipped double-buffered cell grid (M4.2), and a differential ANSI
+ * streamer that puts one write(2) on the wire per frame (M4.3).
  */
 
 #include "common/heapviz_abi.h"
+#include "tui/framebuffer.h"
+#include "tui/renderer.h"
 #include "tui/terminal.h"
 
 #include <cerrno>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <string>
 #include <string_view>
+#include <sys/ioctl.h>
 #include <unistd.h>
 
 namespace {
@@ -39,27 +44,17 @@ void print_usage() {
         "  heapviz --help               this message\n"
         "\n"
         "development aids:\n"
-        "  heapviz --term-check         exercise raw mode and teardown (M4.1)\n"
+        "  heapviz --term-check         draw a frame and exercise teardown\n"
         "\n"
-        "Not yet implemented: attach is ROADMAP.md M2.3, the framebuffer and\n"
-        "renderer are M4.2 and M4.3.\n");
+        "Not yet implemented: attaching to a target is ROADMAP.md M2.3, and the\n"
+        "heap map itself is M3.\n");
 }
 
-void put(std::string_view s) {
-    const char *p = s.data();
-    std::size_t n = s.size();
-    while (n > 0) {
-        const ssize_t w = ::write(STDOUT_FILENO, p, n);
-        if (w < 0) { if (errno == EINTR) continue; return; }
-        p += w;
-        n -= static_cast<std::size_t>(w);
-    }
-}
-
-/* Hand-check for M4.1. Everything here is provisional: cursor positioning by
- * hand and a busy read loop are precisely what M4.2 and M4.5 replace. It exists
- * so the teardown paths can be exercised against a real terminal, which the pty
- * test cannot do for things like resize or an actual Ctrl-C from a keyboard. */
+/* Hand-check for M4.1 through M4.3, drawn with the real framebuffer and
+ * renderer. The busy-wait loop is provisional: M4.5 replaces it with poll() on
+ * a frame deadline. It exists so the terminal layer can be exercised against a
+ * real terminal, which the pty test cannot do for a resize or an actual Ctrl-C
+ * from a keyboard. */
 int term_check() {
     hv::TerminalGuard guard;
     const hv::TermStatus st = guard.enter(STDOUT_FILENO);
@@ -68,31 +63,77 @@ int term_check() {
         return 1;
     }
 
-    put("\033[2;4Hheapviz terminal check (M4.1)\r\n");
-    put("\033[4;4HRaw mode is on: keys arrive unbuffered and unechoed.\r\n");
-    put("\033[5;4HISIG is kept, so Ctrl-C is a signal and exits cleanly.\r\n");
-    put("\033[7;4HPress q or Ctrl-C to leave. The shell you return to should\r\n");
-    put("\033[8;4Hlook exactly as it did before.\r\n");
-    put("\033[10;4HKeys seen: ");
+    winsize ws{};
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) != 0 || ws.ws_col == 0) {
+        ws.ws_col = 80;
+        ws.ws_row = 24;
+    }
+    const int w = ws.ws_col;
+    const int h = ws.ws_row;
+
+    hv::Framebuffer fb;
+    hv::Renderer    r;
+    if (!fb.resize(w, h)) {
+        guard.restore();
+        std::fprintf(stderr, "heapviz: terminal too large or too small\n");
+        return 1;
+    }
+    r.reserve(w, h);
+
+    constexpr hv::Rgb kInk    = 0x00D8D8D8;
+    constexpr hv::Rgb kPanel  = 0x00101418;
+    constexpr hv::Rgb kAccent = 0x0058C7F3;
+
+    std::string keys;
+    bool        dirty = true;
 
     while (!hv::quit_requested()) {
+        if (dirty) {
+            fb.clear(hv::Cell{U' ', kInk, kPanel, 0});
+            fb.box(hv::Rect{0, 0, w, h}, hv::BoxStyle::Rounded, kAccent, kPanel);
+            fb.text(3, 0, " heapviz terminal check ", kAccent, kPanel,
+                    hv::kAttrBold);
+            fb.text(3, 2, "Raw mode is on: keys arrive unbuffered, unechoed.",
+                    kInk, kPanel);
+            fb.text(3, 3, "ISIG is kept, so Ctrl-C exits the same way q does.",
+                    kInk, kPanel);
+
+            /* A TrueColor sweep, which is also the widest run of same-coloured
+             * cells the pen elision will ever see. */
+            for (int x = 3; x < w - 3; ++x) {
+                const auto t = static_cast<hv::Rgb>((x * 255) / (w > 6 ? w - 6 : 1));
+                fb.put(x, 5, hv::Cell{U'█', (t << 16) | (0x80u << 8) | (255u - t),
+                                      kPanel, 0});
+            }
+
+            fb.text(3, 7, "Keys seen: ", kInk, kPanel);
+            fb.text(14, 7, keys, kAccent, kPanel, hv::kAttrBold);
+            fb.text(3, h - 2, "q or Ctrl-C to leave. Your shell should come "
+                              "back exactly as it was.", kInk, kPanel);
+
+            r.render(fb);
+            r.flush(STDOUT_FILENO);
+            fb.swap(hv::Cell{U' ', kInk, kPanel, 0});
+            dirty = false;
+        }
+
         char c = 0;
         const ssize_t n = ::read(STDIN_FILENO, &c, 1);
         if (n < 0) { if (errno == EINTR) continue; break; }
         if (n == 0) {
-            /* VMIN=0 means read() returns immediately when no key is waiting.
-             * usleep() is gone in POSIX.1-2008; M4.5 replaces this whole busy
-             * loop with poll() on a frame deadline. */
+            /* VMIN=0 means read() returns immediately when no key is waiting. */
             timespec ts{0, 10 * 1000 * 1000};
             nanosleep(&ts, nullptr);
             continue;
         }
         if (c == 'q') break;
-        if (c >= 32 && c < 127) put(std::string_view(&c, 1));
+        if (c >= 32 && c < 127 && keys.size() < 40) keys.push_back(c);
+        dirty = true;
     }
 
     guard.restore();
-    std::printf("heapviz: terminal restored\n");
+    std::printf("heapviz: terminal restored, %zu cells in the last frame\n",
+                r.cells_examined());
     return 0;
 }
 

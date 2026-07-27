@@ -112,6 +112,13 @@ target_link_libraries(framebuffer_test PRIVATE heapviz_core)
 add_test(NAME framebuffer COMMAND framebuffer_test)
 set_tests_properties(framebuffer PROPERTIES TIMEOUT 60)
 
+# --- Differential ANSI streamer (M4.3) -------------------------------------
+add_executable(renderer_test renderer_test.cpp)
+heapviz_test_target(renderer_test)
+target_link_libraries(renderer_test PRIVATE heapviz_core)
+add_test(NAME renderer COMMAND renderer_test)
+set_tests_properties(renderer PROPERTIES TIMEOUT 60)
+
 # --- The TUI binary runs ----------------------------------------------------
 add_test(NAME tui_version COMMAND heapviz_tui --version)
 set_tests_properties(tui_version PROPERTIES
