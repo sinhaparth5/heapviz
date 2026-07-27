@@ -12,7 +12,7 @@ concrete enough that "done" is not a judgement call.
 
 | # | Milestone | Scope | Status | Done |
 |---|-----------|-------|--------|------|
-| M0 | Scaffold & shared ABI | build, layout, IPC contract | `[ ]` | 0 / 19 |
+| M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[ ]` | 0 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
 | M3 | Sparse address representation | grid, hash table, aging | `[ ]` | 0 / 24 |
@@ -21,7 +21,7 @@ concrete enough that "done" is not a judgement call.
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 0 / 209**
+**Total: 19 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -60,41 +60,41 @@ Nothing in `heap-doc.md` covers this, but M1 cannot start without it.
 
 ### M0.1 Build system
 
-- [ ] `CMakeLists.txt` at root, `cmake_minimum_required(VERSION 3.20)`,
+- [x] `CMakeLists.txt` at root, `cmake_minimum_required(VERSION 3.20)`,
       `project(heapviz LANGUAGES C CXX)`, C++20 / C11.
-- [ ] Target `heapviz`, the TUI binary. Links `pthread`, `rt` (for `shm_open`
+- [x] Target `heapviz`, the TUI binary. Links `pthread`, `rt` (for `shm_open`
       on older glibc).
-- [ ] Target `heapviz_preload`: `SHARED`, output name `libheapviz.so`.
+- [x] Target `heapviz_preload`: `SHARED`, output name `libheapviz.so`.
       Links `dl`, `pthread`, `rt`.
-- [ ] Preload target compiled with `-fPIC -fvisibility=hidden
+- [x] Preload target compiled with `-fPIC -fvisibility=hidden
       -fno-exceptions -fno-rtti -O2`. Only the interposed symbols are
       `__attribute__((visibility("default")))`.
-- [ ] Preload target must **not** link `libstdc++` (`set_target_properties(...
+- [x] Preload target must **not** link `libstdc++` (`set_target_properties(...
       LINKER_LANGUAGE C)` or link `-nodefaultlibs` + explicit libs). Verify with
       `ldd libheapviz.so`; libstdc++ pulls in static init that allocates.
-- [ ] `-Wall -Wextra -Werror` on both targets. Sanitizer preset
+- [x] `-Wall -Wextra -Werror` on both targets. Sanitizer preset
       (`-DHEAPVIZ_ASAN=ON`) for the TUI only. ASan and an LD_PRELOAD malloc
       hook in the same process do not coexist.
-- [ ] `CMakePresets.json` with `debug`, `release`, `asan` presets.
+- [x] `CMakePresets.json` with `debug`, `release`, `asan` presets.
 
 ### M0.2 Source layout
 
-- [ ] `src/common/`: headers shared by both binaries. No `.cpp` files that
+- [x] `src/common/`: headers shared by both binaries. No `.cpp` files that
       link into the preload lib unless they honour ground rule #1.
-- [ ] `src/preload/`: interceptor.
-- [ ] `src/tui/`: renderer, parsers, analysis.
-- [ ] `examples/`: target programs to profile.
-- [ ] `tests/`: unit tests.
+- [x] `src/preload/`: interceptor.
+- [x] `src/tui/`: renderer, parsers, analysis.
+- [x] `examples/`: target programs to profile.
+- [x] `tests/`: unit tests.
 
 ### M0.3 The shared ABI (`src/common/heapviz_abi.h`)
 
 Get this file wrong and you get silent corruption across process boundaries,
 so it is worth more care than anything else in M0.
 
-- [ ] `HEAPVIZ_ABI_MAGIC` (8-byte constant, e.g. `0x48505A5631000000` = "HPZV1")
+- [x] `HEAPVIZ_ABI_MAGIC` (8-byte constant, e.g. `0x48505A5631000000` = "HPZV1")
       and `HEAPVIZ_ABI_VERSION`. Consumer refuses to attach on mismatch and says
       so in plain English.
-- [ ] `struct Event`, exactly 32 bytes, standard layout, no padding
+- [x] `struct Event`, exactly 32 bytes, standard layout, no padding
       surprises:
 
       | Offset | Size | Field       | Notes                                    |
@@ -106,11 +106,11 @@ so it is worth more care than anything else in M0.
       | 28     | 3    | `tid`       | low 24 bits of thread id                 |
       | 31     | 1    | `op`        | `enum Op : uint8_t`                      |
 
-- [ ] `static_assert(sizeof(Event) == 32)` and a `static_assert` on every
+- [x] `static_assert(sizeof(Event) == 32)` and a `static_assert` on every
       field offset via `offsetof`. Both binaries compile this header, so a
       layout drift is a compile error rather than a runtime mystery.
-- [ ] `enum class Op : uint8_t { Malloc, Free, Calloc, Realloc, Memalign }`.
-- [ ] `struct RingHeader`, cache-line aware:
+- [x] `enum class Op : uint8_t { Malloc, Free, Calloc, Realloc, Memalign }`.
+- [x] `struct RingHeader`, cache-line aware:
       - `alignas(64)` block: magic, version, pid, capacity (power of two),
         `event_size`, process start time, target `comm` string (16 bytes).
       - `alignas(64)` block: `std::atomic<uint64_t> head` (producer only).
@@ -118,14 +118,44 @@ so it is worth more care than anything else in M0.
       - `alignas(64)` block: `std::atomic<uint64_t> dropped`, `total_events`.
       The three hot blocks sit on separate cache lines; head/tail false sharing
       is the classic SPSC performance bug.
-- [ ] `heapviz_shm_name(pid)` produces the canonical `/heapviz_shm_<pid>`
+- [x] `heapviz_shm_name(pid)` produces the canonical `/heapviz_shm_<pid>`
       string, used by both sides. One function, no string duplication.
-- [ ] Total mapping size helper: `sizeof(RingHeader) + capacity * sizeof(Event)`,
+- [x] Total mapping size helper: `sizeof(RingHeader) + capacity * sizeof(Event)`,
       rounded up to page size.
 
 **Definition of done:** `cmake --build build` produces `heapviz` and
 `libheapviz.so`; `ldd libheapviz.so` shows no `libstdc++`; a throwaway test
 maps the shm region from both binaries and agrees on every offset.
+
+**Done.** 5 tests green on the `debug`, `release`, and `asan` presets. Where the
+implementation diverged from the plan above:
+
+- **The interceptor is C11, not C++.** The plan called for `-fno-exceptions
+  -fno-rtti`; those are C++ flags. Building `src/preload/` as C makes the
+  "no libstdc++" guarantee structural rather than a linker flag someone can drop
+  later. The `preload_no_libstdcxx` test enforces it either way.
+- **`std::atomic<uint64_t>` became a dual-language macro.** Since the two halves
+  are now C11 and C++20, `heapviz_abi.h` selects `_Atomic` or `std::atomic`. The
+  `abi_layout_matches` test compiles the same layout dump both ways and requires
+  byte-identical output, which is what proves the two agree.
+- **`ptr` is `uint64_t`, not `uintptr_t`.** A wire format wants a fixed width
+  independent of the compiling platform.
+- **`enum class Op : uint8_t` became plain enum constants** plus a `uint8_t op`
+  field, so C can name them.
+- **`RingHeader` gained `flags` and `producer_exited`,** the latter required by
+  M1.7. Header is 256 bytes across four cache lines.
+- **`_POSIX_C_SOURCE=200809L` is set project-wide.** Extensions are off
+  (`-std=c11`, not `gnu11`), which hides `shm_open`, `ftruncate`, and
+  `clock_gettime` behind the feature-test macro.
+- **`examples/hello_alloc.c` added** so `examples/` holds something real. The
+  full configurable workload is still M1.8.
+- **Extra test `preload_loads`** dlopens the `.so` and checks the version probe.
+  Without it, `preload_no_libstdcxx` passes vacuously: `ldd` prints
+  "statically linked" for a clean dependency-free library and for a broken one
+  alike.
+
+Both guards were mutation-tested: widening an `HvEvent` field fires the static
+asserts, and perturbing one writer value fails `shm_roundtrip`.
 
 ---
 

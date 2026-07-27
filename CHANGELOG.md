@@ -43,6 +43,17 @@ promise about the ABI or the CLI surface.
 
 ### Added
 
+- Shared memory ABI (`src/common/heapviz_abi.h`) at `HEAPVIZ_ABI_VERSION` 1: a
+  32-byte `HvEvent` packet and a 256-byte `HvRingHeader` laid out across four
+  cache lines, with `head` and `tail` deliberately on separate lines. Compiles
+  under both C11 and C++20; every field offset is pinned by a static assert.
+- CMake build producing `heapviz` (C++20 TUI) and `libheapviz.so` (C11
+  interceptor), with `debug`, `release`, and `asan` presets.
+- Test suite (5 tests): cross-language ABI layout comparison, a C11-writes /
+  C++20-reads shared memory round-trip, a libstdc++ absence check on the
+  interceptor, a dlopen smoke test, and a TUI version check.
+- `examples/hello_alloc.c`, a small workload covering the brk path, the mmap
+  path, and a realloc growth chain.
 - `ROADMAP.md`: milestone breakdown and progress tracker derived from
   `heap-doc.md`.
 - `CHANGELOG.md`: this file.
