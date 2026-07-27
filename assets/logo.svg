@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 190" width="480" height="190" role="img" aria-label="heapviz — heap allocation visualizer">
+  <title>heapviz</title>
+
+  <defs>
+    <clipPath id="markClip">
+      <rect x="26" y="25" width="140" height="140" rx="10"/>
+    </clipPath>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- card -->
+  <rect x="0.75" y="0.75" width="478.5" height="188.5" rx="14"
+        fill="#0C0C0C" stroke="#C87828" stroke-opacity="0.55" stroke-width="1.5"/>
+
+  <!-- mark: a miniature spatial heap map -->
+  <g clip-path="url(#markClip)">
+    <rect x="26" y="25" width="140" height="140" fill="#141414"/>
+
+    <!-- row 1 -->
+    <rect x="38"  y="41"  width="28" height="10" rx="1.5" fill="#3584E4"/>
+    <rect x="70"  y="41"  width="18" height="10" rx="1.5" fill="#4EC94E"/>
+    <rect x="92"  y="41"  width="62" height="10" rx="1.5" fill="#262626"/>
+    <!-- row 2 -->
+    <rect x="38"  y="55"  width="10" height="10" rx="1.5" fill="#262626"/>
+    <rect x="50"  y="55"  width="28" height="10" rx="1.5" fill="#3584E4"/>
+    <rect x="80"  y="55"  width="4"  height="10" rx="1"   fill="#F6D32D"/>
+    <rect x="86"  y="55"  width="22" height="10" rx="1.5" fill="#3584E4"/>
+    <rect x="110" y="55"  width="44" height="10" rx="1.5" fill="#262626"/>
+    <!-- row 3 -->
+    <rect x="38"  y="69"  width="22" height="10" rx="1.5" fill="#4EC94E"/>
+    <rect x="62"  y="69"  width="16" height="10" rx="1.5" fill="#262626"/>
+    <rect x="80"  y="69"  width="36" height="10" rx="1.5" fill="#E01B24"/>
+    <rect x="118" y="69"  width="36" height="10" rx="1.5" fill="#262626"/>
+    <!-- row 4 -->
+    <rect x="38"  y="83"  width="46" height="10" rx="1.5" fill="#E01B24"/>
+    <rect x="86"  y="83"  width="10" height="10" rx="1.5" fill="#262626"/>
+    <rect x="98"  y="83"  width="28" height="10" rx="1.5" fill="#3584E4"/>
+    <rect x="128" y="83"  width="4"  height="10" rx="1"   fill="#F6D32D"/>
+    <rect x="134" y="83"  width="20" height="10" rx="1.5" fill="#262626"/>
+    <!-- row 5 -->
+    <rect x="38"  y="97"  width="14" height="10" rx="1.5" fill="#262626"/>
+    <rect x="54"  y="97"  width="36" height="10" rx="1.5" fill="#4EC94E"/>
+    <rect x="92"  y="97"  width="18" height="10" rx="1.5" fill="#262626"/>
+    <rect x="112" y="97"  width="42" height="10" rx="1.5" fill="#3584E4"/>
+    <!-- row 6 -->
+    <rect x="38"  y="111" width="34" height="10" rx="1.5" fill="#3584E4"/>
+    <rect x="74"  y="111" width="16" height="10" rx="1.5" fill="#262626"/>
+    <rect x="92"  y="111" width="12" height="10" rx="1.5" fill="#4EC94E"/>
+    <rect x="106" y="111" width="48" height="10" rx="1.5" fill="#262626"/>
+    <!-- row 7 -->
+    <rect x="38"  y="125" width="24" height="10" rx="1.5" fill="#262626"/>
+    <rect x="64"  y="125" width="4"  height="10" rx="1"   fill="#F6D32D"/>
+    <rect x="70"  y="125" width="42" height="10" rx="1.5" fill="#3584E4"/>
+    <rect x="114" y="125" width="40" height="10" rx="1.5" fill="#262626"/>
+    <!-- row 8 -->
+    <rect x="38"  y="139" width="18" height="10" rx="1.5" fill="#4EC94E"/>
+    <rect x="58"  y="139" width="24" height="10" rx="1.5" fill="#262626"/>
+    <rect x="84"  y="139" width="16" height="10" rx="1.5" fill="#3584E4"/>
+    <rect x="102" y="139" width="20" height="10" rx="1.5" fill="#E01B24"/>
+    <rect x="124" y="139" width="30" height="10" rx="1.5" fill="#262626"/>
+
+    <!-- inspector cursor -->
+    <rect x="88.25" y="108.25" width="19.5" height="15.5" rx="2.5"
+          fill="none" stroke="#33D7E8" stroke-width="1.5"/>
+
+    <rect x="26" y="25" width="140" height="70" fill="url(#sheen)"/>
+  </g>
+  <rect x="26.5" y="25.5" width="139" height="139" rx="9.5"
+        fill="none" stroke="#2E2E2E" stroke-width="1"/>
+
+  <!-- wordmark -->
+  <text x="194" y="98"
+        font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace"
+        font-size="52" font-weight="700" letter-spacing="-1.5">
+    <tspan fill="#E8E8E8">heap</tspan><tspan fill="#7FE08A">viz</tspan>
+  </text>
+  <text x="195" y="131"
+        font-family="ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'DejaVu Sans Mono', monospace"
+        font-size="14.5" letter-spacing="0.4" fill="#7A7A7A">heap allocation visualizer</text>
+</svg>

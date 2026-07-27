@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="heapviz icon">
+  <title>heapviz</title>
+
+  <defs>
+    <clipPath id="iconClip">
+      <rect x="1.5" y="1.5" width="157" height="157" rx="26"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#iconClip)">
+    <rect x="0" y="0" width="160" height="160" fill="#0C0C0C"/>
+
+    <!-- row 1 -->
+    <rect x="18"  y="23"  width="34" height="12" rx="2" fill="#3584E4"/>
+    <rect x="56"  y="23"  width="20" height="12" rx="2" fill="#4EC94E"/>
+    <rect x="80"  y="23"  width="62" height="12" rx="2" fill="#262626"/>
+    <!-- row 2 -->
+    <rect x="18"  y="40"  width="12" height="12" rx="2" fill="#262626"/>
+    <rect x="34"  y="40"  width="30" height="12" rx="2" fill="#3584E4"/>
+    <rect x="68"  y="40"  width="5"  height="12" rx="1.5" fill="#F6D32D"/>
+    <rect x="76"  y="40"  width="26" height="12" rx="2" fill="#3584E4"/>
+    <rect x="106" y="40"  width="36" height="12" rx="2" fill="#262626"/>
+    <!-- row 3 -->
+    <rect x="18"  y="57"  width="26" height="12" rx="2" fill="#4EC94E"/>
+    <rect x="48"  y="57"  width="16" height="12" rx="2" fill="#262626"/>
+    <rect x="68"  y="57"  width="42" height="12" rx="2" fill="#E01B24"/>
+    <rect x="114" y="57"  width="28" height="12" rx="2" fill="#262626"/>
+    <!-- row 4 -->
+    <rect x="18"  y="74"  width="50" height="12" rx="2" fill="#E01B24"/>
+    <rect x="72"  y="74"  width="12" height="12" rx="2" fill="#262626"/>
+    <rect x="88"  y="74"  width="30" height="12" rx="2" fill="#3584E4"/>
+    <rect x="122" y="74"  width="5"  height="12" rx="1.5" fill="#F6D32D"/>
+    <rect x="131" y="74"  width="11" height="12" rx="2" fill="#262626"/>
+    <!-- row 5 -->
+    <rect x="18"  y="91"  width="16" height="12" rx="2" fill="#262626"/>
+    <rect x="38"  y="91"  width="42" height="12" rx="2" fill="#4EC94E"/>
+    <rect x="84"  y="91"  width="18" height="12" rx="2" fill="#262626"/>
+    <rect x="106" y="91"  width="36" height="12" rx="2" fill="#3584E4"/>
+    <!-- row 6 -->
+    <rect x="18"  y="108" width="40" height="12" rx="2" fill="#3584E4"/>
+    <rect x="62"  y="108" width="16" height="12" rx="2" fill="#262626"/>
+    <rect x="82"  y="108" width="16" height="12" rx="2" fill="#4EC94E"/>
+    <rect x="102" y="108" width="40" height="12" rx="2" fill="#262626"/>
+    <!-- row 7 -->
+    <rect x="18"  y="125" width="28" height="12" rx="2" fill="#262626"/>
+    <rect x="50"  y="125" width="5"  height="12" rx="1.5" fill="#F6D32D"/>
+    <rect x="59"  y="125" width="48" height="12" rx="2" fill="#3584E4"/>
+    <rect x="111" y="125" width="31" height="12" rx="2" fill="#262626"/>
+
+    <!-- inspector cursor -->
+    <rect x="79.25" y="105.25" width="21.5" height="17.5" rx="3"
+          fill="none" stroke="#33D7E8" stroke-width="1.75"/>
+  </g>
+
+  <rect x="1.5" y="1.5" width="157" height="157" rx="26"
+        fill="none" stroke="#C87828" stroke-opacity="0.6" stroke-width="3"/>
+</svg>
