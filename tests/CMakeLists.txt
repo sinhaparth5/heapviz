@@ -63,6 +63,13 @@ add_executable(consumer_claim_test unit/consumer_claim_test.cpp)
 heapviz_test_target(consumer_claim_test)
 add_test(NAME consumer_claim COMMAND consumer_claim_test)
 
+# --- Address space bucketizer (M3.1) ---------------------------------------
+add_executable(grid_test unit/grid_test.cpp)
+heapviz_test_target(grid_test)
+target_link_libraries(grid_test PRIVATE heapviz_core)
+add_test(NAME grid COMMAND grid_test)
+set_tests_properties(grid PROPERTIES TIMEOUT 60)
+
 # --- Capability detection, quantisers and fallback (M4.4) ------------------
 # Detection takes the environment strings as arguments rather than reading
 # them, so this needs no setenv and cannot disturb the tests around it.

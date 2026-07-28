@@ -15,13 +15,13 @@ concrete enough that "done" is not a judgement call.
 | M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
-| M3 | Sparse address representation | grid, hash table, aging | `[ ]` | 0 / 24 |
+| M3 | Sparse address representation | grid, hash table, aging | `[~]` | 4 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 31 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 88 / 209**
+**Total: 92 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -394,17 +394,57 @@ bounded memory.*
 
 ### M3.1 Grid bucketizer
 
-- [ ] `cell_bytes = next_pow2(ceil(span / (cols * rows)))`, clamped to
+- [x] `cell_bytes = next_pow2(ceil(span / (cols * rows)))`, clamped to
       `[64 B, 1 GiB]`. Power of two so address→cell is a shift, not a divide.
-- [ ] `cell_index(addr) = (addr - base) >> log2_cell_bytes`.
-- [ ] Recompute on resize (`SIGWINCH`) and on heap-bounds change. Both paths go
+- [x] `cell_index(addr) = (addr - base) >> log2_cell_bytes`.
+- [x] Recompute on resize (`SIGWINCH`) and on heap-bounds change. Both paths go
       through one function so they cannot diverge.
-- [ ] Display the current granularity in the legend. The mockup shows
+- [~] Display the current granularity in the legend. The mockup shows
       `(1 cell = 256 B)`, and it must be the live value, not a constant.
-- [ ] Left gutter labels: address offset from `heap_start` per row, auto-unit
-      (B / KB / MB) with consistent width.
-- [ ] Guard `span == 0` and `cols * rows == 0` (1-column terminal): no
+      `format_byte_size` produces the string and is checked against a live
+      grid; there is no legend to put it in until M3.3 draws one.
+- [~] Left gutter labels: address offset from `heap_start` per row, auto-unit
+      (B / KB / MB) with consistent width. `format_offset` and
+      `offset_of_row` are done and tested; likewise waiting on a map to sit
+      beside.
+- [x] Guard `span == 0` and `cols * rows == 0` (1-column terminal): no
       div-by-zero, no negative shift.
+
+#### M3.1 completion notes
+
+**Both recompute paths are one function, structurally.** `set_viewport` and
+`set_bounds` are two-line wrappers over `configure`, which is the only code that
+computes a granularity. The failure this prevents is quiet: addresses mapped
+into one grid while the gutter labels describe another, which looks like a
+plausible heap map that is simply wrong. The test asserts that arriving at a
+geometry by resizing and by changing bounds produces byte-identical state.
+
+**The ceiling division is written as quotient-plus-remainder.** The obvious
+`(span + cells - 1) / cells` overflows exactly when the span gets interesting,
+and a 64-bit span is not hypothetical: the gap between a brk heap at `0x55...`
+and an mmap region at `0x7f...` is about 47 bits, which is what the target
+looks like before M2 can separate the regions.
+
+**A span too wide to cover is reported, not hidden.** With `cell_bytes` clamped
+at 1 GiB, a viewport of 10000 cells reaches 10 TiB; a full 47-bit span does not
+fit, so the top of it falls off the grid. `covers_whole_span` exists so the UI
+can say that, per the README's commitment that a profiler which quietly lies
+about what it missed is worse than none. M2 makes it rare by tracking regions
+separately rather than spanning the gap between them.
+
+**Degenerate inputs are normal operation, not error handling.** An empty span
+(before the first event is drained) and a zero-cell viewport (a window being
+dragged narrow) both reach `configure` in ordinary use. It leaves the grid
+invalid with a legal shift still in place, so a caller that ignores the return
+value gets safe answers rather than a shift by a negative amount.
+
+Verified by `tests/unit/grid_test.cpp`, which round-trips every cell of a grid
+rather than spot-checking indices: a shift that is one too small maps both ends
+of every cell correctly and still collides with the neighbour, so only checking
+the boundary catches it. Six mutations tried, six caught: dropping the ceiling,
+dropping the degenerate guard, dropping `index_of`'s upper bound, letting
+`set_viewport` diverge from `configure`, un-fixing the gutter width, and making
+`covers_whole_span` always agree.
 
 ### M3.2 Chunk tracking hash table
 
