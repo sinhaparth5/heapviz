@@ -73,6 +73,8 @@ The four that work:
 ./build/debug/heapviz --term-check                   # drive M4.1-M4.5 against a real terminal
 ./build/debug/heapviz --term-check --debug-timing    # per-phase frame budget overlay
 ./build/debug/heapviz --cleanup                      # reap rings left by SIGKILLed targets
+./build/debug/heapviz --term-check --no-unicode      # ASCII glyph fallback
+COLORTERM= TERM=linux ./build/debug/heapviz --term-check   # 16-colour fallback
 ```
 
 `--term-check` is the manual counterpart to the pty tests: it is the only way to
@@ -87,7 +89,7 @@ guarded by `if(NOT HEAPVIZ_ASAN)`. `interceptor_overhead` additionally only runs
 on optimised builds, because at `-O0` the interceptor costs 45-56 ns and
 straddles its own 50 ns budget.
 
-Expected test counts when everything passes: debug 15, release 16, asan 13.
+Expected test counts when everything passes: debug 16, release 17, asan 14.
 
 ## Architecture
 

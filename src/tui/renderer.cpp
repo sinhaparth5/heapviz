@@ -78,6 +78,52 @@ void Renderer::move_to(int x, int y) {
     cur_valid_ = true;
 }
 
+void Renderer::set_color_mode(ColorMode m) noexcept {
+    mode_ = m;
+    pen_valid_ = false; /* the held pen is in the old mode's units */
+}
+
+std::uint32_t Renderer::resolve(Rgb c) const noexcept {
+    switch (mode_) {
+    case ColorMode::TrueColor: return c;
+    case ColorMode::Cube256:   return rgb_to_cube256(c);
+    case ColorMode::Ansi16:    return rgb_to_ansi16(c);
+    }
+    return c;
+}
+
+void Renderer::emit_color(bool foreground, std::uint32_t code) {
+    switch (mode_) {
+    case ColorMode::TrueColor:
+        append_lit(foreground ? "\033[38;2;" : "\033[48;2;");
+        put_uint((code >> 16) & 0xFFu);
+        out_.push_back(';');
+        put_uint((code >> 8) & 0xFFu);
+        out_.push_back(';');
+        put_uint(code & 0xFFu);
+        out_.push_back('m');
+        return;
+
+    case ColorMode::Cube256:
+        append_lit(foreground ? "\033[38;5;" : "\033[48;5;");
+        put_uint(code);
+        out_.push_back('m');
+        return;
+
+    case ColorMode::Ansi16:
+        /* 30-37 and 40-47 for the first eight; the brights got bolted on later
+         * as 90-97 and 100-107 rather than extending the original range. */
+        append_lit("\033[");
+        if (code < 8u) {
+            put_uint((foreground ? 30u : 40u) + code);
+        } else {
+            put_uint((foreground ? 90u : 100u) + (code - 8u));
+        }
+        out_.push_back('m');
+        return;
+    }
+}
+
 void Renderer::emit_pen(const Cell &c) {
     /* Attributes have no portable "turn just this one off", so any change to
      * them goes through a full reset and re-application. Colour-only changes,
@@ -104,26 +150,20 @@ void Renderer::emit_pen(const Cell &c) {
         pen_attrs_ = c.attrs;
     }
 
-    if (!pen_valid_ || c.fg != pen_fg_) {
-        append_lit("\033[38;2;");
-        put_uint((c.fg >> 16) & 0xFFu);
-        out_.push_back(';');
-        put_uint((c.fg >> 8) & 0xFFu);
-        out_.push_back(';');
-        put_uint(c.fg & 0xFFu);
-        out_.push_back('m');
-        pen_fg_ = c.fg;
+    /* Resolved before the comparison, not after: in a quantising mode the
+     * question "does this cell need a new colour sequence" is about the code
+     * that would be emitted, not about the RGB it came from. */
+    const std::uint32_t fg = resolve(c.fg);
+    const std::uint32_t bg = resolve(c.bg);
+
+    if (!pen_valid_ || fg != pen_fg_) {
+        emit_color(/*foreground=*/true, fg);
+        pen_fg_ = fg;
     }
 
-    if (!pen_valid_ || c.bg != pen_bg_) {
-        append_lit("\033[48;2;");
-        put_uint((c.bg >> 16) & 0xFFu);
-        out_.push_back(';');
-        put_uint((c.bg >> 8) & 0xFFu);
-        out_.push_back(';');
-        put_uint(c.bg & 0xFFu);
-        out_.push_back('m');
-        pen_bg_ = c.bg;
+    if (!pen_valid_ || bg != pen_bg_) {
+        emit_color(/*foreground=*/false, bg);
+        pen_bg_ = bg;
     }
 
     pen_valid_ = true;

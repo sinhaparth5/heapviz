@@ -123,8 +123,16 @@ struct LoopConfig {
      * usually less, because idle frames skip the draw. */
     unsigned target_fps = 60;
 
-    /* Minimum usable geometry. Below this the loop stops rather than rendering
-     * a heap map into six columns. */
+    /* Colour depth the renderer emits. M4.4's detection lives outside the loop
+     * so that the decision is made once, at startup, from the environment the
+     * process was handed. */
+    ColorMode color = ColorMode::TrueColor;
+
+    /* Hard floor, not the usable minimum. `hv::size_is_usable` (80x24) is what
+     * refuses to *start*; this is the geometry below which a frame cannot be
+     * drawn at all, and a running session is only torn down when it is
+     * breached. Between the two the display is cramped, which is the user's
+     * business, not a reason to kill their session mid-resize. */
     int min_width  = 20;
     int min_height = 6;
 

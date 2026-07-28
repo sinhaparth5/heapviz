@@ -24,6 +24,7 @@
 #ifndef HEAPVIZ_TUI_RENDERER_H
 #define HEAPVIZ_TUI_RENDERER_H
 
+#include "tui/capabilities.h"
 #include "tui/framebuffer.h"
 
 #include <cstddef>
@@ -41,8 +42,18 @@ constexpr std::size_t kMaxBytesPerCell = 80;
 
 class Renderer {
 public:
+    /* Colour depth to emit (M4.4). TrueColor is the default, so a Renderer
+     * built without asking behaves exactly as it did before capability
+     * detection existed. Takes effect on the next frame. */
+    void set_color_mode(ColorMode m) noexcept;
+    ColorMode color_mode() const noexcept { return mode_; }
+
     /* Sizes the output buffer for a w x h terminal. The only call that
-     * allocates. Safe to call on every resize. */
+     * allocates. Safe to call on every resize.
+     *
+     * TrueColor is the most expensive mode per cell, so a buffer sized here is
+     * large enough for any mode; switching to Cube256 later cannot overflow
+     * what was reserved. */
     void reserve(int w, int h);
 
     /* Diffs front against back and fills the output buffer. Returns the number
@@ -82,15 +93,27 @@ private:
     void move_to(int x, int y);
     void emit_pen(const Cell &c);
 
+    /* Rgb -> whatever the current mode actually puts on the wire: the RGB
+     * itself, a 256-cube index, or an ANSI 0..15. */
+    std::uint32_t resolve(Rgb c) const noexcept;
+    void emit_color(bool foreground, std::uint32_t code);
+
     std::vector<char> out_;
+
+    ColorMode mode_ = ColorMode::TrueColor;
 
     /* Pen and cursor are per-frame: the frame epilogue resets SGR and leaves
      * the cursor wherever the last glyph put it, so carrying either across
-     * frames would be a guess. */
-    Rgb          pen_fg_    = 0;
-    Rgb          pen_bg_    = 0;
-    std::uint8_t pen_attrs_ = 0;
-    bool         pen_valid_ = false;
+     * frames would be a guess.
+     *
+     * The two colours are held *resolved*, not as the Cell's RGB. Quantising
+     * is many-to-one, so two cells differing in RGB can emit the same code;
+     * comparing the raw values would emit that code twice and hand a 256-colour
+     * terminal more bytes per frame than a TrueColor one gets. */
+    std::uint32_t pen_fg_    = 0;
+    std::uint32_t pen_bg_    = 0;
+    std::uint8_t  pen_attrs_ = 0;
+    bool          pen_valid_ = false;
 
     int  cur_x_     = 0;
     int  cur_y_     = 0;

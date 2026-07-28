@@ -88,6 +88,19 @@ promise about the ABI or the CLI surface.
   with `SIGKILL`, which skips the interceptor's own cleanup. Rings belonging to
   a process that is still running are never touched, so it is safe to run
   during a profiling session.
+- Colour now adapts to the terminal instead of assuming 24-bit. heapviz reads
+  `COLORTERM` and `TERM` at startup and picks TrueColor, the 256-colour
+  palette, or 16 colours; the display stays usable over an SSH session to a
+  console that would previously have shown escape codes as text. Run
+  `COLORTERM= TERM=linux heapviz --term-check` to see a fallback on a terminal
+  that does not need one.
+- `--no-unicode` draws with `#`, `=`, `.` and ASCII borders, for terminals
+  whose font has no block-drawing characters.
+- heapviz refuses to start on a terminal smaller than 80x24, naming both the
+  size it found and the size it needs, rather than drawing something illegible.
+  A terminal that is resized *below* that while heapviz is running is not a
+  reason to quit; the display only stops if it shrinks past the point where a
+  frame can be drawn at all.
 - README notes `reset` / `stty sane` for the one case nothing can guard
   against, `kill -9`.
 

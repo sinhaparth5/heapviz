@@ -11,6 +11,7 @@
  */
 
 #include "common/heapviz_abi.h"
+#include "tui/capabilities.h"
 #include "tui/event_loop.h"
 #include "tui/framebuffer.h"
 #include "tui/renderer.h"
@@ -45,10 +46,17 @@ void print_usage() {
         "\n"
         "  heapviz --cleanup            remove rings left by killed targets\n"
         "\n"
+        "options:\n"
+        "  --no-unicode                 ASCII glyphs, for terminals whose font\n"
+        "                               has no block-drawing characters\n"
+        "\n"
         "development aids:\n"
         "  heapviz --term-check         run the terminal engine on a test frame\n"
         "  heapviz --term-check --debug-timing\n"
         "                               ...with the per-phase frame budget shown\n"
+        "\n"
+        "Colour depth is detected from COLORTERM and TERM. To see a fallback,\n"
+        "run e.g. `COLORTERM= TERM=linux heapviz --term-check`.\n"
         "\n"
         "Not yet implemented: attaching to a target is ROADMAP.md M2.3, and the\n"
         "heap map itself is M3.\n");
@@ -95,7 +103,8 @@ constexpr hv::Rgb kWarn   = 0x00F3B158;
  * you whether the result flickered, and it cannot press Ctrl-C. */
 class TermCheckApp final : public hv::LoopApp {
 public:
-    explicit TermCheckApp(bool timing) : timing_(timing) {}
+    TermCheckApp(bool timing, hv::Capabilities caps)
+        : caps_(caps), glyphs_(hv::glyphs_for(caps)), timing_(timing) {}
 
     bool key(char c) override {
         if (c == 'q') { hv::request_quit(); return false; }
@@ -115,7 +124,7 @@ public:
         const int h = fb.height();
 
         fb.clear(hv::Cell{U' ', kInk, kPanel, 0});
-        fb.box(hv::Rect{0, 0, w, h}, hv::BoxStyle::Rounded, kAccent, kPanel);
+        fb.box(hv::Rect{0, 0, w, h}, glyphs_.box, kAccent, kPanel);
         fb.text(3, 0, " heapviz terminal check ", kAccent, kPanel, hv::kAttrBold);
 
         fb.text(3, 2, "Raw mode is on: keys arrive unbuffered, unechoed.",
@@ -125,13 +134,31 @@ public:
         fb.text(3, 4, "Resize the window: the frame follows without tearing.",
                 kInk, kPanel);
 
-        /* A TrueColor sweep, which is also the widest run of same-coloured
-         * cells the pen elision will ever see. */
+        /* A full-saturation sweep. It is both the widest run of distinct
+         * colours the pen elision will ever face and the clearest way to see a
+         * quantiser working: in 256-colour mode the gradient visibly steps, and
+         * in 16-colour mode it collapses to a handful of bands. */
         for (int x = 3; x < w - 3; ++x) {
             const auto t = static_cast<hv::Rgb>((x * 255) / (w > 6 ? w - 6 : 1));
-            fb.put(x, 6, hv::Cell{U'█', (t << 16) | (0x80u << 8) | (255u - t),
+            fb.put(x, 6, hv::Cell{glyphs_.full,
+                                  (t << 16) | (0x80u << 8) | (255u - t),
                                   kPanel, 0});
         }
+
+        /* The density ramp, which is what --no-unicode actually changes. */
+        int gx = 3;
+        for (int rep = 0; rep < 6 && gx < w - 4; ++rep, ++gx)
+            fb.put(gx, 7, hv::Cell{glyphs_.full, kAccent, kPanel, 0});
+        for (int rep = 0; rep < 6 && gx < w - 4; ++rep, ++gx)
+            fb.put(gx, 7, hv::Cell{glyphs_.medium, kAccent, kPanel, 0});
+        for (int rep = 0; rep < 6 && gx < w - 4; ++rep, ++gx)
+            fb.put(gx, 7, hv::Cell{glyphs_.light, kAccent, kPanel, 0});
+
+        char caps[96];
+        std::snprintf(caps, sizeof caps, "  %s, %s glyphs",
+                      hv::color_mode_str(caps_.color),
+                      caps_.unicode ? "Unicode" : "ASCII");
+        fb.text(gx, 7, caps, kMuted, kPanel);
 
         fb.text(3, 8, "Keys seen: ", kInk, kPanel);
         fb.text(14, 8, keys_, kAccent, kPanel, hv::kAttrBold);
@@ -187,12 +214,25 @@ public:
 private:
     static double us(std::uint64_t ns) { return static_cast<double>(ns) / 1000.0; }
 
+    hv::Capabilities caps_;
+    hv::GlyphSet     glyphs_;
     std::string keys_;
     bool        animate_ = false;
     bool        timing_  = false;
 };
 
-int term_check(bool timing) {
+int term_check(bool timing, bool force_ascii) {
+    const hv::Capabilities caps = hv::detect_capabilities_from_env(force_ascii);
+
+    /* Checked before the alternate screen is entered, so the refusal lands in
+     * the user's scrollback rather than on a screen that is torn down the
+     * moment it is printed. */
+    int w = 0, h = 0;
+    if (hv::terminal_size(STDOUT_FILENO, w, h) && !hv::size_is_usable(w, h)) {
+        hv::report_too_small(STDERR_FILENO, w, h);
+        return 1;
+    }
+
     hv::TerminalGuard guard;
     const hv::TermStatus st = guard.enter(STDOUT_FILENO);
     if (st != hv::TermStatus::Ok) {
@@ -203,9 +243,10 @@ int term_check(bool timing) {
     hv::LoopConfig cfg;
     cfg.in_fd  = STDIN_FILENO;
     cfg.out_fd = STDOUT_FILENO;
+    cfg.color  = caps.color;
 
     hv::EventLoop  loop(cfg);
-    TermCheckApp   app(timing);
+    TermCheckApp   app(timing, caps);
     const hv::LoopExit why = loop.run(app);
 
     guard.restore();
@@ -225,16 +266,29 @@ int term_check(bool timing) {
 } // namespace
 
 int main(int argc, char **argv) {
+    /* Order-independent, because `--term-check --no-unicode` and
+     * `--no-unicode --term-check` are both things a person will type. */
+    bool timing      = false;
+    bool force_ascii = false;
+    for (int i = 1; i < argc; ++i) {
+        const std::string_view a{argv[i]};
+        if (a == "--debug-timing") timing = true;
+        if (a == "--no-unicode")   force_ascii = true;
+    }
+
     if (argc >= 2) {
         const std::string_view arg{argv[1]};
         if (arg == "--version" || arg == "-V") { print_version(); return 0; }
         if (arg == "--help" || arg == "-h")    { print_usage();   return 0; }
         if (arg == "--term-check") {
-            const bool timing = argc >= 3 &&
-                                std::string_view{argv[2]} == "--debug-timing";
-            return term_check(timing);
+            return term_check(timing, force_ascii);
         }
         if (arg == "--cleanup")                { return cleanup(); }
+        if (arg == "--no-unicode") {
+            /* A modifier on its own is not a command. */
+            print_usage();
+            return 0;
+        }
 
         std::fprintf(stderr, "heapviz: not implemented yet: %s\n", argv[1]);
         std::fprintf(stderr, "heapviz: try --help\n");

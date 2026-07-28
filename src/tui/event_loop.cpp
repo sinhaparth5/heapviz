@@ -74,6 +74,7 @@ void     LoopApp::resized(int, int) {}
 EventLoop::EventLoop(const LoopConfig &cfg) noexcept : cfg_(cfg) {
     const unsigned fps = cfg_.target_fps == 0 ? 1u : cfg_.target_fps;
     period_ns_ = kNsPerSec / fps;
+    r_.set_color_mode(cfg_.color);
 }
 
 bool EventLoop::resize(int w, int h) {

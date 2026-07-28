@@ -16,12 +16,12 @@ concrete enough that "done" is not a judgement call.
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
 | M3 | Sparse address representation | grid, hash table, aging | `[ ]` | 0 / 24 |
-| M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 27 / 34 |
+| M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 31 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 84 / 209**
+**Total: 88 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -598,14 +598,64 @@ prove it.
 
 ### M4.4 Capability detection & fallback
 
-- [ ] Detect TrueColor: `COLORTERM` ∈ {`truecolor`, `24bit`}. Fall back to the
+- [x] Detect TrueColor: `COLORTERM` ∈ {`truecolor`, `24bit`}. Fall back to the
       256-colour cube (`\033[38;5;Nm`) with an RGB→cube quantiser.
-- [ ] Fall back further to 16 colours if `TERM` suggests it; the tool should
+- [x] Fall back further to 16 colours if `TERM` suggests it; the tool should
       still be *usable* over a bad SSH session even if not beautiful.
-- [ ] `--no-unicode` flag → ASCII glyph set (`#`, `=`, `.`) for terminals with
+- [x] `--no-unicode` flag → ASCII glyph set (`#`, `=`, `.`) for terminals with
       broken block-character fonts.
-- [ ] Refuse to start below a minimum size (e.g. 80×24) with a readable message
+- [x] Refuse to start below a minimum size (e.g. 80×24) with a readable message
       rather than rendering garbage.
+
+#### M4.4 completion notes
+
+**Detection is a pure function of two strings, not a reader of the
+environment.** `detect_capabilities(colorterm, term, force_ascii)` takes what it
+decides from, and only `detect_capabilities_from_env` calls `getenv`. `setenv`
+is not thread-safe and its effect outlives the test that used it, so a rule
+that could only be tested by installing an environment would be a rule that
+disturbs every other test in the binary. The whole detection table is covered
+without touching the process's own environment.
+
+**Nothing queries the terminal.** DA1 and XTGETTCAP would mean writing a query
+and reading a reply that may never arrive, on the same device that is the
+user's keyboard. The timeout would be a visible startup delay on exactly the
+slow links this fallback exists for.
+
+**An unrecognised `TERM` defaults to 256 colours, not 16.** This is the one
+judgement call in the table and it goes against "conservative wins": a great
+many terminals still report a bare `TERM=xterm` while supporting 256 colours,
+so falling back to 16 there would degrade the common case to protect a rare
+one. 16-colour mode is opt-in from `TERM` positively saying so.
+
+**The pen is held resolved, not as the `Cell`'s RGB.** Quantising is
+many-to-one, so a gradient of near-identical reds becomes one palette index.
+Comparing the raw values, as M4.3's renderer did, would emit an identical
+sequence for every cell of that gradient — handing a 256-colour terminal *more*
+bytes per frame than a TrueColor one gets, which is precisely backwards. Driven
+over a pty, the term-check sweep costs 161 colour sequences at 24-bit and 79 in
+256-colour mode.
+
+**The grey ramp is consulted, not just the cube.** The 6×6×6 cube's grey
+diagonal steps by 40 where the 24-entry ramp steps by 10, so quantising a grey
+panel to the cube alone bands it visibly. The quantiser computes both and takes
+the smaller error, and never returns an index below 16: 0–15 are whatever the
+user's theme redefined them to, so their appearance is not predictable from
+inside the process.
+
+**Two different minimum sizes, deliberately.** `size_is_usable` (80×24) refuses
+to *start*; `LoopConfig::min_width/min_height` (20×6) is the geometry below
+which a frame cannot be drawn at all and a running session is torn down.
+Between them the display is cramped, which is the user's business — a mid-drag
+resize should not kill their session.
+
+Verified by `tests/unit/capabilities_test.cpp`, which round-trips all 240
+non-system palette entries rather than asserting against a table of indices (a
+table only proves the code still agrees with what it printed the day it was
+written), and by four new cases in `tests/unit/renderer_test.cpp` for the wire
+formats. Four mutations tried, four caught: comparing raw RGB in the pen,
+dropping the grey ramp, defaulting unknown terminals to 16, and collapsing the
+bright ANSI range onto the base one.
 
 ### M4.5 Event loop & frame pacing
 

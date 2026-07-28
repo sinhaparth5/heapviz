@@ -144,6 +144,70 @@ void test_pen_elision() {
           "pen: alternating colours emit one sequence each");
 }
 
+/* M4.4. The mode changes the bytes on the wire and nothing else: the diff, the
+ * cursor elision and the epilogue are all mode-independent, so these check the
+ * colour sequences and leave the rest to the tests above. */
+void test_color_mode_wire_formats() {
+    Framebuffer fb;
+    fb.resize(10, 3);
+    Renderer r;
+    r.reserve(10, 3);
+
+    check(r.color_mode() == hv::ColorMode::TrueColor,
+          "mode: TrueColor is the default, as it was before M4.4");
+
+    r.set_color_mode(hv::ColorMode::Cube256);
+    fb.put(0, 0, Cell{U'A', 0x00FF0000u, 0x00000000u, 0});
+    r.render(fb);
+    check(out_of(r) ==
+              "\033[1;1H" "\033[0m" "\033[38;5;196m" "\033[48;5;16m" "A" "\033[0m",
+          "mode: 256-colour emits palette indices");
+    check(count(out_of(r), "38;2;") == 0,
+          "mode: 256-colour emits no 24-bit sequence");
+
+    fb.resize(10, 3);
+    r.set_color_mode(hv::ColorMode::Ansi16);
+    fb.put(0, 0, Cell{U'A', 0x00FF0000u, 0x00000000u, 0});
+    r.render(fb);
+    check(out_of(r) ==
+              "\033[1;1H" "\033[0m" "\033[91m" "\033[40m" "A" "\033[0m",
+          "mode: 16-colour uses the bright range for 8..15");
+
+    /* The first eight and the brights are different code ranges, not one range
+     * with an offset, so both have to be exercised. */
+    fb.resize(10, 3);
+    fb.put(0, 0, Cell{U'A', 0x00800000u, 0x00008000u, 0});
+    r.render(fb);
+    check(out_of(r) ==
+              "\033[1;1H" "\033[0m" "\033[31m" "\033[42m" "A" "\033[0m",
+          "mode: 16-colour uses 30-37/40-47 for the first eight");
+}
+
+/* The elision has to key off the code that gets emitted, not off the Cell's
+ * RGB. Quantising is many-to-one, so a renderer that compared the raw values
+ * would re-emit an identical sequence for every cell in a gradient and hand a
+ * 256-colour terminal more bytes per frame than a TrueColor one gets. */
+void test_quantised_colours_still_elide() {
+    Framebuffer fb;
+    fb.resize(20, 2);
+    Renderer r;
+    r.reserve(20, 2);
+    r.set_color_mode(hv::ColorMode::Cube256);
+
+    /* Ten distinct reds, all near enough to quantise to cube index 196. */
+    for (int x = 0; x < 10; ++x) {
+        const auto fg = static_cast<hv::Rgb>(0x00FF0000u + static_cast<hv::Rgb>(x));
+        fb.put(x, 0, Cell{kBlock, fg, kBg, 0});
+    }
+    r.render(fb);
+
+    check(r.cells_emitted() == 10, "quantised pen: emitted ten cells");
+    check(count(out_of(r), "38;5;") == 1,
+          "quantised pen: ten near-identical reds share one sequence");
+    check(count(out_of(r), "38;5;196m") == 1,
+          "quantised pen: and it is the index they all quantise to");
+}
+
 void test_cursor_elision() {
     Framebuffer fb;
     fb.resize(20, 3);
@@ -426,6 +490,8 @@ int main() {
     test_idle_frame_costs_nothing();
     test_single_cell_wire_format();
     test_pen_elision();
+    test_color_mode_wire_formats();
+    test_quantised_colours_still_elide();
     test_cursor_elision();
     test_only_changed_cells();
     test_attributes();

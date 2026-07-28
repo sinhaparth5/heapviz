@@ -63,6 +63,15 @@ add_executable(consumer_claim_test unit/consumer_claim_test.cpp)
 heapviz_test_target(consumer_claim_test)
 add_test(NAME consumer_claim COMMAND consumer_claim_test)
 
+# --- Capability detection, quantisers and fallback (M4.4) ------------------
+# Detection takes the environment strings as arguments rather than reading
+# them, so this needs no setenv and cannot disturb the tests around it.
+add_executable(capabilities_test unit/capabilities_test.cpp)
+heapviz_test_target(capabilities_test)
+target_link_libraries(capabilities_test PRIVATE heapviz_core)
+add_test(NAME capabilities COMMAND capabilities_test)
+set_tests_properties(capabilities PROPERTIES TIMEOUT 60)
+
 # --- Differential ANSI streamer (M4.3) -------------------------------------
 add_executable(renderer_test unit/renderer_test.cpp)
 heapviz_test_target(renderer_test)
