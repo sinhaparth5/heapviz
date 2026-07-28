@@ -109,6 +109,16 @@ promise about the ABI or the CLI surface.
   interpolated perceptually, which is what keeps green-to-blue from passing
   through a muddy grey on the way. `heapviz --term-check` now shows both fades
   laid out as time across the screen.
+- The heap map is drawn. Each cell stands for a span of addresses, shaded by
+  how much of it is in use and coloured by what happened there most recently.
+  Down the left is an address gutter, labelling every row with its offset from
+  the start of the heap; above it a legend names the current granularity — the
+  live figure, so it follows the window as you resize it. On a terminal too
+  narrow for the gutter the map keeps the columns instead. If the address range
+  is wider than any granularity can cover, the legend says the top of it is not
+  being shown rather than displaying part of the heap as though it were all of
+  it. Pressing `a` in `heapviz --term-check` now churns a synthetic 4 MiB heap
+  through the real map, which is the only way to see M3 until attaching lands.
 - README notes `reset` / `stty sane` for the one case nothing can guard
   against, `kill -9`.
 

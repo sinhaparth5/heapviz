@@ -15,6 +15,7 @@
 #include "tui/event_loop.h"
 #include "tui/framebuffer.h"
 #include "tui/heat_color.h"
+#include "tui/map_view.h"
 #include "tui/renderer.h"
 #include "tui/shm_cleanup.h"
 #include "tui/terminal.h"
@@ -24,6 +25,7 @@
 #include <string>
 #include <string_view>
 #include <unistd.h>
+#include <vector>
 
 namespace {
 
@@ -98,6 +100,83 @@ constexpr hv::Rgb kPanel  = 0x00101418;
 constexpr hv::Rgb kAccent = 0x0058C7F3;
 constexpr hv::Rgb kWarn   = 0x00F3B158;
 
+/* A synthetic heap for --term-check.
+ *
+ * M2.3 is what connects the map to a real target; until then there is no way to
+ * look at M3 on a real terminal at all, and "the gutter labels are aligned" is
+ * not a thing a unit test can tell you. This churns a 4 MiB address space
+ * through the same Grid, HeatMap and MapView the real thing will use, so what is
+ * on screen is the shipped code path with a fake event source rather than a
+ * drawing of what it might look like.
+ *
+ * It also gives M4.6 its subject: heavy churn through a full-screen map is the
+ * workload the 1 ms frame budget is supposed to survive. */
+class DemoHeap {
+public:
+    static constexpr std::uint64_t kBase = 0x55A0000000ull;
+    static constexpr std::uint64_t kSpan = 4u << 20;
+    static constexpr std::size_t   kMaxLive = 4096;
+
+    DemoHeap() {
+        live_.reserve(kMaxLive); /* once, so churning allocates nothing */
+        grid_.set_bounds(kBase, kBase + kSpan);
+    }
+
+    void fit(hv::Rect area) {
+        hv::fit_grid(grid_, area);
+        map_.configure(grid_);
+        /* A granularity change invalidates every aggregate, so replay what is
+         * live rather than showing an empty map until the next allocation. */
+        for (const Live &c : live_)
+            map_.on_alloc(c.addr, c.size, c.usable, now_ms_);
+    }
+
+    /* One frame's worth of allocator traffic. Returns true if anything moved. */
+    bool churn(std::uint32_t now_ms, unsigned ops) {
+        now_ms_ = now_ms;
+        for (unsigned i = 0; i < ops; ++i) {
+            const bool freeing = !live_.empty() &&
+                                 (live_.size() >= kMaxLive || (next() & 3u) == 0);
+            if (freeing) {
+                const std::size_t k = next() % live_.size();
+                const Live c = live_[k];
+                map_.on_free(c.addr, c.size, c.usable, now_ms);
+                live_[k] = live_.back();
+                live_.pop_back();
+            } else {
+                const auto size = static_cast<std::uint32_t>(32 + (next() % 2000));
+                const std::uint32_t usable = (size + 31u) & ~31u;
+                const std::uint64_t addr =
+                    kBase + ((next() % (kSpan - usable)) & ~std::uint64_t{15});
+                map_.on_alloc(addr, size, usable, now_ms);
+                live_.push_back(Live{addr, size, usable});
+            }
+        }
+        return ops != 0;
+    }
+
+    void seed(unsigned n) { churn(0, n); }
+
+    const hv::HeatMap &map() const noexcept { return map_; }
+
+private:
+    std::uint64_t next() noexcept {
+        rng_ += 0x9E3779B97F4A7C15ull;
+        std::uint64_t z = rng_;
+        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+        return z ^ (z >> 31);
+    }
+
+    struct Live { std::uint64_t addr; std::uint32_t size; std::uint32_t usable; };
+
+    hv::Grid          grid_;
+    hv::HeatMap       map_;
+    std::vector<Live> live_;
+    std::uint64_t     rng_    = 0x243F6A8885A308D3ull;
+    std::uint32_t     now_ms_ = 0;
+};
+
 /* Hand-check for M4.1 through M4.5, drawn through the real framebuffer,
  * renderer and event loop. It exists so the terminal layer can be exercised
  * against a real terminal: a pty test can drive a resize, but it cannot tell
@@ -105,7 +184,10 @@ constexpr hv::Rgb kWarn   = 0x00F3B158;
 class TermCheckApp final : public hv::LoopApp {
 public:
     TermCheckApp(bool timing, hv::Capabilities caps)
-        : caps_(caps), glyphs_(hv::glyphs_for(caps)), timing_(timing) {}
+        : caps_(caps), glyphs_(hv::glyphs_for(caps)), view_(caps),
+          timing_(timing) {
+        heap_.seed(600);
+    }
 
     bool key(char c) override {
         if (c == 'q') { hv::request_quit(); return false; }
@@ -115,10 +197,24 @@ public:
         return true;
     }
 
+    void resized(int w, int h) override { heap_.fit(map_area(w, h)); }
+
+    bool update(std::uint64_t now_ns) override {
+        if (start_ns_ == 0) start_ns_ = now_ns;
+        now_ms_ = static_cast<std::uint32_t>((now_ns - start_ns_) / 1000000u);
+        return animate_ ? heap_.churn(now_ms_, 60) : false;
+    }
+
     /* Off by default, so the skipped-frame counter shows the idle path doing
      * its job. Pressing `a` turns it on and the fps counter climbs to the frame
-     * rate, which is the other half of the demonstration. */
-    bool animating() const override { return animate_; }
+     * rate, which is the other half of the demonstration.
+     *
+     * The map's own fades keep it true for a couple of seconds after the churn
+     * stops, which is the point: a frame skipped mid-fade would freeze the
+     * colour until the next allocation happened to arrive. */
+    bool animating() const override {
+        return animate_ || hv::MapView::animating(heap_.map(), now_ms_);
+    }
 
     void draw(hv::Framebuffer &fb, const hv::LoopStats &s) override {
         const int w = fb.width();
@@ -210,12 +306,22 @@ public:
                     s.overruns != 0 ? kWarn : kMuted, kPanel);
         }
 
+        view_.draw(fb, map_area(w, h), heap_.map(), now_ms_);
+
         fb.text(3, h - 2, "q or Ctrl-C to leave. Your shell should come back "
                           "exactly as it was.", kInk, kPanel);
     }
 
 private:
     static double us(std::uint64_t ns) { return static_cast<double>(ns) / 1000.0; }
+
+    /* Fixed rather than packed under whatever the text above happens to end at,
+     * because `t` toggles four rows of overlay and a map whose geometry moved
+     * with it would re-bucket the whole address space on a keypress. */
+    static hv::Rect map_area(int w, int h) noexcept {
+        constexpr int kTop = 19; /* below the timing block, drawn or not */
+        return hv::Rect{3, kTop, w - 6, h - 3 - kTop};
+    }
 
     /* M3.4's two fades with time laid out across the screen, so the whole
      * timeline is visible at once. Watching one cell age tests your memory of
@@ -259,9 +365,13 @@ private:
 
     hv::Capabilities caps_;
     hv::GlyphSet     glyphs_;
-    std::string keys_;
-    bool        animate_ = false;
-    bool        timing_  = false;
+    hv::MapView      view_;
+    DemoHeap         heap_;
+    std::string   keys_;
+    std::uint64_t start_ns_ = 0;
+    std::uint32_t now_ms_   = 0;
+    bool          animate_  = false;
+    bool          timing_   = false;
 };
 
 int term_check(bool timing, bool force_ascii) {

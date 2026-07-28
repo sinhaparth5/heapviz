@@ -93,6 +93,13 @@ target_link_libraries(heat_color_test PRIVATE heapviz_core)
 add_test(NAME heat_color COMMAND heat_color_test)
 set_tests_properties(heat_color PROPERTIES TIMEOUT 60)
 
+# --- Heap map drawing: legend, gutter and density ramp (M3.1) --------------
+add_executable(map_view_test unit/map_view_test.cpp)
+heapviz_test_target(map_view_test)
+target_link_libraries(map_view_test PRIVATE heapviz_core)
+add_test(NAME map_view COMMAND map_view_test)
+set_tests_properties(map_view PROPERTIES TIMEOUT 60)
+
 # --- Capability detection, quantisers and fallback (M4.4) ------------------
 # Detection takes the environment strings as arguments rather than reading
 # them, so this needs no setenv and cannot disturb the tests around it.

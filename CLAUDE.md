@@ -79,7 +79,10 @@ COLORTERM= TERM=linux ./build/debug/heapviz --term-check   # 16-colour fallback
 
 `--term-check` is the manual counterpart to the pty tests: it is the only way to
 see whether a resize flickered, and `a` toggles animation so the idle path's
-skipped-frame counter can be watched doing its job.
+skipped-frame counter can be watched doing its job. Since M3.1's legend and
+gutter landed it also carries a synthetic 4 MiB heap driven through the real
+`Grid`/`HeatMap`/`MapView`, so `a` is now also the map's churn switch — which
+makes it the workload M4.6 measures against.
 
 ### Preset differences that matter
 
@@ -89,7 +92,7 @@ guarded by `if(NOT HEAPVIZ_ASAN)`. `interceptor_overhead` additionally only runs
 on optimised builds, because at `-O0` the interceptor costs 45-56 ns and
 straddles its own 50 ns budget.
 
-Expected test counts when everything passes: debug 20, release 21, asan 18.
+Expected test counts when everything passes: debug 21, release 22, asan 19.
 
 ## Architecture
 

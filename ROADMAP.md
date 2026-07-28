@@ -15,13 +15,13 @@ concrete enough that "done" is not a judgement call.
 | M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
-| M3 | Sparse address representation | grid, hash table, aging | `[~]` | 22 / 24 |
+| M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 31 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 110 / 209**
+**Total: 112 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -399,14 +399,14 @@ bounded memory.*
 - [x] `cell_index(addr) = (addr - base) >> log2_cell_bytes`.
 - [x] Recompute on resize (`SIGWINCH`) and on heap-bounds change. Both paths go
       through one function so they cannot diverge.
-- [~] Display the current granularity in the legend. The mockup shows
+- [x] Display the current granularity in the legend. The mockup shows
       `(1 cell = 256 B)`, and it must be the live value, not a constant.
-      `format_byte_size` produces the string and is checked against a live
-      grid; there is no legend to put it in until M3.3 draws one.
-- [~] Left gutter labels: address offset from `heap_start` per row, auto-unit
-      (B / KB / MB) with consistent width. `format_offset` and
-      `offset_of_row` are done and tested; likewise waiting on a map to sit
-      beside.
+      `MapView::draw_legend` reads it off the grid every frame; the test
+      resizes three times and requires the string to move.
+- [x] Left gutter labels: address offset from `heap_start` per row, auto-unit
+      (B / KB / MB) with consistent width. Drawn by `MapView::draw` and checked
+      row by row against `Grid::offset_of_row`, so a map one row out of step
+      fails on every row rather than on none.
 - [x] Guard `span == 0` and `cols * rows == 0` (1-column terminal): no
       div-by-zero, no negative shift.
 
@@ -445,6 +445,64 @@ the boundary catches it. Six mutations tried, six caught: dropping the ceiling,
 dropping the degenerate guard, dropping `index_of`'s upper bound, letting
 `set_viewport` diverge from `configure`, un-fixing the gutter width, and making
 `covers_whole_span` always agree.
+
+#### M3.1 completion notes: the legend and gutter, once there was a map
+
+The last two boxes waited on somewhere to draw them. `src/tui/map_view.{h,cpp}`
+is that place: the legend row, the address gutter and the cells, over the Grid,
+HeatMap and HeatRamp that M3.1 through M3.4 built.
+
+**The layout is the granularity, one level up.** M3.1's whole argument is that
+one function computes the granularity so two callers cannot disagree. Drawing
+reintroduces the hazard, because the number of cells is the rectangle *minus*
+the gutter and the legend — a layout decision made in one place and consumed in
+two. `map_layout` is therefore the only code that decides what fits, `fit_grid`
+is the only supported way to size a grid for an area, and `draw` reads the same
+layout back rather than recomputing it. A gutter that appeared in one and not
+the other would not misalign the display by a column; it would label row 7 with
+the address of row 6, which is a plausible-looking lie.
+
+**Glyph carries density, colour carries state, deliberately twice.** A packed
+cell is a full block and a brighter blue. The redundancy is the point: M4.4
+degrades colour to a 6×6×6 cube or to sixteen fixed values and `--no-unicode`
+degrades the blocks to `#`, `=`, `.`, but the two degrade independently, so
+each terminal keeps one working encoding of fill. The thresholds are 25% and
+66% rather than evenly spaced, because on a real heap the useful distinction is
+"holds something" against "packed", and an even split puts both boundaries
+where almost no cell sits.
+
+**Every cell, every frame, no cleverness.** `draw` repaints the whole map with
+no attempt to touch only what changed; M4.3's differ turns that back into no
+output when nothing moved, and it does so by comparing cells rather than by
+trusting the drawing code. Measured on a 200×50 map (9408 cells, `-O2`):
+
+| | per frame |
+|---|---|
+| draw, every cell settled | 157 µs |
+| draw, a third of the map mid-fade | 319 µs |
+| `MapView::animating` walking every cell | 46 µs |
+
+against a 1 ms budget. `animating` early-outs on the first moving cell, so its
+46 µs is the *idle* cost — the case where it has to prove nothing is moving —
+which is 0.28% of a core at 60 Hz and consistent with M4.5's claim.
+
+**`--term-check` grows a synthetic heap.** M2.3 is what connects the map to a
+real target, and until then there is no way to look at M3 on a terminal at all;
+"the gutter labels are aligned" is not something a unit test reports. `a` now
+churns a 4 MiB address space through the shipped Grid, HeatMap and MapView, so
+what is on screen is the real path with a fake event source. It is also M4.6's
+subject: heavy churn through a full-screen map is the workload the frame budget
+is supposed to survive.
+
+Verified by `tests/unit/map_view_test.cpp`, which reads the framebuffer back
+rather than asserting on the layout struct — checking the arithmetic without
+checking that the arithmetic is what gets used is how a display ends up one row
+out of step with its own labels. Fifteen mutations tried, fifteen caught,
+including three that needed a test written for them: swapping the two density
+thresholds (monotone, and leaves the middle shade unreachable), drawing a map
+wider than its area (invisible while every test sizes the grid correctly), and
+letting the legend spill past its rectangle (invisible while every legend is
+drawn full-width).
 
 ### M3.2 Chunk tracking hash table
 
