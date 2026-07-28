@@ -63,6 +63,15 @@ add_executable(consumer_claim_test unit/consumer_claim_test.cpp)
 heapviz_test_target(consumer_claim_test)
 add_test(NAME consumer_claim COMMAND consumer_claim_test)
 
+# --- Chunk tracking table (M3.2) -------------------------------------------
+# Correctness runs everywhere; the 30 ns lookup budget is asserted only under
+# NDEBUG, for the same reason interceptor_overhead is release-only.
+add_executable(chunk_table_test unit/chunk_table_test.cpp)
+heapviz_test_target(chunk_table_test)
+target_link_libraries(chunk_table_test PRIVATE heapviz_core)
+add_test(NAME chunk_table COMMAND chunk_table_test)
+set_tests_properties(chunk_table PROPERTIES TIMEOUT 180)
+
 # --- Address space bucketizer (M3.1) ---------------------------------------
 add_executable(grid_test unit/grid_test.cpp)
 heapviz_test_target(grid_test)

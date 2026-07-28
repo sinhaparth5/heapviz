@@ -15,13 +15,13 @@ concrete enough that "done" is not a judgement call.
 | M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
-| M3 | Sparse address representation | grid, hash table, aging | `[~]` | 4 / 24 |
+| M3 | Sparse address representation | grid, hash table, aging | `[~]` | 12 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 31 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 92 / 209**
+**Total: 100 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -448,22 +448,81 @@ dropping the degenerate guard, dropping `index_of`'s upper bound, letting
 
 ### M3.2 Chunk tracking hash table
 
-- [ ] Open-addressing Robin Hood table, `uintptr_t` key → chunk record.
-- [ ] Record: `size` (requested), `usable`, `alloc_ts`, `free_ts`, `tid`,
+- [x] Open-addressing Robin Hood table, `uintptr_t` key → chunk record.
+- [x] Record: `size` (requested), `usable`, `alloc_ts`, `free_ts`, `tid`,
       `state`. Keep it ≤ 32 bytes so a probe touches one cache line.
-- [ ] Hash: Fibonacci mixing, `(ptr * 0x9E3779B97F4A7C15) >> (64 - log2_cap)`.
+- [x] Hash: Fibonacci mixing, `(ptr * 0x9E3779B97F4A7C15) >> (64 - log2_cap)`.
       Pointers are 16-byte aligned, so the low bits are worthless; this fixes
       that. Do not use `ptr % capacity`.
-- [ ] Robin Hood insert: on probe, if our displacement exceeds the incumbent's,
+- [x] Robin Hood insert: on probe, if our displacement exceeds the incumbent's,
       swap and continue. Keeps the max probe length low.
-- [ ] Backward-shift deletion, no tombstones. Tombstone tables degrade badly
+- [x] Backward-shift deletion, no tombstones. Tombstone tables degrade badly
       under the alloc/free churn this tool exists to watch.
-- [ ] Grow at 0.85 load factor, doubling, with rehash.
-- [ ] Bounded memory policy: cap live entries; when the cap is hit, evict the
+- [x] Grow at 0.85 load factor, doubling, with rehash.
+- [x] Bounded memory policy: cap live entries; when the cap is hit, evict the
       oldest *freed* records first (they are only needed for the fade
       animation). Never evict live allocations silently; surface it.
-- [ ] Benchmark: 1M inserts + 1M lookups + 1M deletes, report ns/op.
-      Target < 30 ns lookup. Record: `______`.
+- [x] Benchmark: 1M inserts + 1M lookups + 1M deletes, report ns/op.
+      Target < 30 ns lookup. Record: `25 ns lookup, 117 ns insert, 46 ns erase
+      (release, quiet machine; max probe 1-3 at 0.76 load)`.
+
+#### M3.2 completion notes
+
+**Timestamps are milliseconds, not the event's nanoseconds.** That is what makes
+the record fit in 32 bytes: two 64-bit timestamps alone would eat half the
+budget. Aging (M3.4) works in units of 200-2000 ms, so a millisecond is already
+finer than anything that will be displayed, and 32 bits of them is 49 days of
+session.
+
+**The eviction queue is a cache, not an index, and that distinction was a bug
+first.** The first version cleared the queue when the cap changed and then asked
+it what to evict, so lowering a cap onto an already-full table evicted nothing.
+The queue can also be legitimately empty (the cap was set after the frees
+happened) or full of stale hints (keys since erased, or recycled and now live
+again). Eviction therefore rebuilds it from a scan of the table when it comes up
+dry, instead of concluding there is nothing to evict. The scan is O(capacity)
+and runs off the steady path.
+
+**Nothing live is ever evicted, and a stale hint is where that nearly broke.**
+A key enters the queue when freed, but the allocator recycles addresses
+constantly, so by the time the hint is popped the record may be live again. Only
+the record's own state can say; the queue gives no sign it has gone stale.
+
+**The benchmark asserts a ratio, not the 30 ns figure.** The absolute number is
+printed and recorded above, and on a quiet machine reads about 25 ns. It cannot
+be the assertion: the same unchanged code measured 25 ns idle and 36 ns with
+other work running, and a 20% margin does not survive a shared runner. A
+benchmark that fails for reasons unrelated to the change under test teaches
+people to re-run it. The test therefore measures a `std::map` over the same keys
+in the same process under the same load and requires the table to beat it by 3x;
+it comes in at 5.3-5.6x, and that ratio held steady across runs whose absolute
+numbers moved 30%.
+
+Verified by `tests/unit/chunk_table_test.cpp`, which replays 56000 mixed
+operations against a shadow `std::map`: a backward shift that drops the wrong
+element leaves records occupying slots but unreachable, so the table reports the
+right size and quietly cannot find things.
+
+Seven mutations tried, six caught, one kept deliberately. Three of the six
+initially survived and each exposed a real gap in the test rather than in the
+code:
+
+- Replacing the hash with `ptr & mask` survived because the first key generator
+  spaced pointers 16 bytes apart, which masking maps to evenly spaced slots with
+  room between them. The pattern that separates a real hash from that one is
+  glibc's *thread arenas*: the same allocation offset appearing at addresses
+  that differ only in high bits. There is now a test for it.
+- Letting eviction take live records survived because no key in the bounded test
+  was ever freed and then reallocated, so "skip live" never mattered.
+- Degrading `find` to a linear scan survived the correctness tests entirely and
+  is what the `std::map` ratio was added to catch.
+
+The one kept without coverage is the Robin Hood early-out in `find`. With this
+hash the worst probe is 1-3 slots, so walking to the next empty slot instead
+costs the same 26 ns a miss already costs, and the mutation is invisible. It
+earns its place when the load factor climbs or the key distribution degrades,
+which is when nobody is watching a benchmark. `src/tui/chunk_table.cpp` says so
+at the line.
 
 ### M3.3 Cell aggregation
 

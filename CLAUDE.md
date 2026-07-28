@@ -89,7 +89,7 @@ guarded by `if(NOT HEAPVIZ_ASAN)`. `interceptor_overhead` additionally only runs
 on optimised builds, because at `-O0` the interceptor costs 45-56 ns and
 straddles its own 50 ns budget.
 
-Expected test counts when everything passes: debug 17, release 18, asan 15.
+Expected test counts when everything passes: debug 18, release 19, asan 16.
 
 ## Architecture
 
