@@ -30,6 +30,14 @@ ctest --preset debug
 Binaries land in `build/<preset>/`. The interceptor is `libheapviz.so`, the TUI
 is `heapviz`, and `churn` / `hello_alloc` are workloads to point them at.
 
+CMake target names are not the output names, so `--target heapviz` fails:
+
+| Target | Produces | Notes |
+|---|---|---|
+| `heapviz_preload` | `libheapviz.so` | C11, never sanitized |
+| `heapviz_tui` | `heapviz` | thin `main.cpp` over `heapviz_core` |
+| `heapviz_core` | `libheapviz_core.a` | terminal/framebuffer/renderer/loop/cleanup; the tests link this so they exercise the shipped objects, not a recompile |
+
 Run one test, or a subset:
 
 ```bash
@@ -54,6 +62,22 @@ Environment variables the interceptor reads: `HEAPVIZ_CAPACITY` (ring slots,
 power of two, at least 1024), `HEAPVIZ_DISABLE`, and `HEAPVIZ_WAIT_MS` (block in
 the constructor until a consumer claims the ring, so a short-lived target
 cannot exit and unlink its segment before anyone attaches).
+
+### What the `heapviz` binary can actually do today
+
+Attach (`--pid`, `-- <cmd>`) is M2.3 and unimplemented; those arguments exit 2.
+The four that work:
+
+```bash
+./build/debug/heapviz --version                      # pinned by the tui_version test
+./build/debug/heapviz --term-check                   # drive M4.1-M4.5 against a real terminal
+./build/debug/heapviz --term-check --debug-timing    # per-phase frame budget overlay
+./build/debug/heapviz --cleanup                      # reap rings left by SIGKILLed targets
+```
+
+`--term-check` is the manual counterpart to the pty tests: it is the only way to
+see whether a resize flickered, and `a` toggles animation so the idle path's
+skipped-frame counter can be watched doing its job.
 
 ### Preset differences that matter
 
@@ -81,13 +105,20 @@ Changing anything in that header is a wire-protocol change. Bump
 the words "ABI break", the old and new version numbers, and a note that both
 halves must be rebuilt. Users can have mismatched halves installed.
 
+`heapviz --version` prints the version and both struct sizes, and the
+`tui_version` test asserts the exact string (`PASS_REGULAR_EXPRESSION` in
+`tests/CMakeLists.txt`, currently `ABI v3, 32-byte events, 256-byte ring
+header`). A version bump that skips that line fails CTest in a place that looks
+unrelated to the header you edited.
+
 `tests/unit/abi_layout_c.c` and `tests/unit/abi_layout_cxx.cpp` compile the
 same dump header in both languages and require byte-identical output.
 
 ### The ring is multi-producer, not SPSC
 
-The roadmap's M1.6 text still describes an SPSC ring. That was wrong and is
-noted as such: every thread in the target that calls `malloc` is a producer.
+The roadmap's M1.6 text still describes an SPSC ring, as does the alt text on
+`README.md`'s "How it works" diagram. Both are stale: every thread in the target
+that calls `malloc` is a producer.
 `src/common/heapviz_ring.h` implements MPSC. Producers claim a slot with a CAS
 on `head`, then publish that slot through two flag bits packed into
 `HvEvent.op`:
@@ -135,6 +166,22 @@ is a single cursor: two consumers would each advance it past events the other
 never saw, and both would display a plausible half of the stream. The producer publishes `magic` last with a release
 store, so a non-matching magic means the constructor is still running and the
 consumer should retry rather than fail.
+
+The claim is a CAS on `consumer_pid`, not a flag, so a stale claim can be
+attributed. Release it with `hv_ring_release` on a clean exit;
+`hv_ring_break_claim` force-clears one, and the caller must confirm the owning
+pid is gone first, because `heapviz_ring.h` is a shared header that cannot make
+syscalls.
+
+### Segments outlive processes
+
+Segments are `/heapviz_shm_<pid>`, mode 0600, unlinked from the interceptor's
+destructor — which `SIGKILL` skips, so killed targets leave rings in `/dev/shm`
+sized by `HEAPVIZ_CAPACITY`. A few kills during development add up to real
+tmpfs; `heapviz --cleanup` (`src/tui/shm_cleanup.cpp`) reaps only the segments
+whose producer pid is gone, so it is safe while other targets are being
+profiled. The reaper lives on the TUI side because `opendir`/`readdir` allocate,
+which ground rule #1 forbids inside the hook.
 
 ### The TUI is one thread on a frame deadline
 
