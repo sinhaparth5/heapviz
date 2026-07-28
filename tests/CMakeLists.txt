@@ -86,6 +86,13 @@ target_link_libraries(heatmap_test PRIVATE heapviz_core)
 add_test(NAME heatmap COMMAND heatmap_test)
 set_tests_properties(heatmap PROPERTIES TIMEOUT 60)
 
+# --- Heatmap aging: Oklab ramps and the flash windows (M3.4) ---------------
+add_executable(heat_color_test unit/heat_color_test.cpp)
+heapviz_test_target(heat_color_test)
+target_link_libraries(heat_color_test PRIVATE heapviz_core)
+add_test(NAME heat_color COMMAND heat_color_test)
+set_tests_properties(heat_color PROPERTIES TIMEOUT 60)
+
 # --- Capability detection, quantisers and fallback (M4.4) ------------------
 # Detection takes the environment strings as arguments rather than reading
 # them, so this needs no setenv and cannot disturb the tests around it.

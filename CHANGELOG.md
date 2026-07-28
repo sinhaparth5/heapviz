@@ -101,6 +101,14 @@ promise about the ABI or the CLI surface.
   A terminal that is resized *below* that while heapviz is running is not a
   reason to quit; the display only stops if it shrinks past the point where a
   frame can be drawn at all.
+- Heat colours age on their own. A fresh allocation pulses bright green for a
+  fifth of a second and then settles to blue over the next four fifths; a free
+  flashes red and fades to the colour of unallocated space over two seconds.
+  Long-lived memory sits at blue, dimmer where a cell is only partly used, so a
+  sparsely occupied region reads as darker than a packed one. The fades are
+  interpolated perceptually, which is what keeps green-to-blue from passing
+  through a muddy grey on the way. `heapviz --term-check` now shows both fades
+  laid out as time across the screen.
 - README notes `reset` / `stty sane` for the one case nothing can guard
   against, `kill -9`.
 

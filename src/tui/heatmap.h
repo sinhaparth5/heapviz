@@ -49,16 +49,19 @@ namespace hv {
  * its own value rather than borrowing zero. */
 constexpr std::uint32_t kNoTime = 0xFFFFFFFFu;
 
-/* How long an event keeps a cell in its flash state. M3.4 owns the colour ramps
- * these drive; the durations live here because the precedence below is what
- * first needs them, and one definition is better than two that drift.
+/* Every duration in the display, in one place, because the feel of the thing is
+ * tuned by moving these four numbers against each other and that is impossible
+ * if they are scattered (ROADMAP M3.4). The first two also decide the flash
+ * states below; `heat_color.h` reads all four.
  *
  * Free is louder and lasts longer than malloc on purpose: an allocation landing
  * is expected and constant, whereas memory going away is the thing a person is
  * usually watching for. */
 struct HeatTimings {
-    std::uint32_t malloc_pulse_ms = 200;
-    std::uint32_t free_flash_ms   = 300;
+    std::uint32_t malloc_pulse_ms = 200;  /* bright green, brightness pulsing  */
+    std::uint32_t malloc_fade_ms  = 800;  /* then green -> the settled colour  */
+    std::uint32_t free_flash_ms   = 300;  /* solid red                         */
+    std::uint32_t free_fade_ms    = 2000; /* then red -> whatever is left      */
 };
 
 constexpr HeatTimings kDefaultTimings{};

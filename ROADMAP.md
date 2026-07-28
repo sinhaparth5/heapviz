@@ -15,13 +15,13 @@ concrete enough that "done" is not a judgement call.
 | M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
-| M3 | Sparse address representation | grid, hash table, aging | `[~]` | 16 / 24 |
+| M3 | Sparse address representation | grid, hash table, aging | `[~]` | 22 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 31 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 104 / 209**
+**Total: 110 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -582,21 +582,92 @@ as untested. The property it was protecting is still pinned by a test.
 
 ### M3.4 Heatmap aging
 
-- [ ] Colour is a pure function of `(state, now - timestamp)`, computed at
+- [x] Colour is a pure function of `(state, now - timestamp)`, computed at
       render time. No animation state machine, no timers per cell.
-- [ ] Malloc: bright green pulse for 200 ms (triangle wave on value/brightness),
+- [x] Malloc: bright green pulse for 200 ms (triangle wave on value/brightness),
       then lerp green → blue over 800 ms.
-- [ ] Free: flash red for 300 ms, then lerp red → dark gray over 2000 ms.
-- [ ] Long-lived allocations sit at solid blue with brightness scaled by
+- [x] Free: flash red for 300 ms, then lerp red → dark gray over 2000 ms.
+- [x] Long-lived allocations sit at solid blue with brightness scaled by
       `live_bytes / cell_bytes` (fill density), so a half-used cell reads dimmer.
-- [ ] All durations in one `constexpr` struct so the feel can be tuned in one
+- [x] All durations in one `constexpr` struct so the feel can be tuned in one
       place.
-- [ ] Lerp in a perceptually reasonable space (Oklab, or at minimum
+- [x] Lerp in a perceptually reasonable space (Oklab, or at minimum
       gamma-correct sRGB). Naive RGB lerp between green and blue passes through
       a muddy gray and looks cheap. The difference is visible.
 
 **Definition of done:** 1M live allocations render at a stable granularity with
 bounded RSS; colours age smoothly with no popping.
+
+#### M3.4 completion notes
+
+Measured: **6.7 ns** per settled cell and **46 ns** per animating one — 67 µs
+and 460 µs respectively for a whole 200×50 map, against M4's 1 ms frame.
+
+**Cost is a design constraint here, not an afterthought, and it changed the
+API.** Colour is computed per cell per frame: 10000 cells at 60 Hz leaves about
+100 ns per cell for everything the frame does. The first version was a free
+function taking the palette as sRGB, and converted inside — three cube roots and
+three `pow()` calls per cell, **206 ns**, 2.1 ms for one map, twice the entire
+budget spent on arithmetic whose inputs are five constants. Three changes took
+it to 46 ns:
+
+- `HeatRamp` holds the palette pre-converted and computes every ramp in Oklab,
+  so exactly one conversion back to sRGB happens per cell rather than several
+  round trips. That is why this is an object you build once and not a function
+  you call with a palette.
+- The settled colours are tabulated against a quantised density at
+  construction, so a cell that is not animating — most cells, most frames —
+  costs a divide and a load. 6.7 ns against 32 ns for the same cell computed.
+- sRGB encoding is a guessed index plus a correction rather than three `pow()`
+  calls, which was 32 ns of the remaining 84.
+
+**Quantising density is only free if the steps cannot be seen.** A map is a
+field of adjacent cells at slightly different densities, so a step above the
+threshold of perception is contour banding across the whole display, not one
+cell being slightly off. 128 steps puts the largest gap at ΔE 0.0031, which is
+the floor — one 8-bit code per channel, the smallest step sRGB can express.
+Halving to 64 doubles it to 0.0060 and `heat_color_test` fails, which is the
+test doing its job rather than a limit worth relaxing.
+
+**Every stage ends where the next begins, and that is the whole of "no
+popping".** The pulse is a triangle wave that returns to plain green, so the
+fade after it starts from the colour the pulse ended on; the free fade
+interpolates towards whatever the cell would otherwise be, so a cell that still
+holds live chunks does not jump back to blue when its flash ends. The test walks
+every timeline a millisecond at a time and requires consecutive colours to be
+perceptually adjacent, which catches a seam at any boundary including ones added
+later.
+
+**`cell_animating` exists because the frame budget above assumes it.** It is the
+predicate that says whether a cell's colour is still moving, and it is what lets
+`LoopApp::animating` skip a frame and the map draw skip a cell. It is asserted
+to agree with `color` — a cell reported settled while its colour is still
+changing would freeze mid-fade until something else forced a repaint.
+
+Verified by `tests/unit/heat_color_test.cpp`. Fourteen mutations tried, twelve
+caught. The two survivors are both in the encoder's index function and neither
+is a behaviour change: correctness there belongs to the correction loop, which
+walks to the code the thresholds define from whatever index it starts at, so
+replacing the loop with a single `if` or indexing linearly instead of by square
+root leaves every correctness test passing and only costs time. Both are named
+at the line in `src/tui/heat_color.cpp`. Three mutations initially survived and
+each exposed a real gap: the density steps had no test at all until banding was
+measured, `cell_animating` was untested against the colour it predicts, and the
+first cost assertion was written before the warm-up pass and was measuring a
+CPU still at its idle clock.
+
+**Two numbers are asserted, both about 3× the measured figure.** The lesson from
+M3.2 stands: an absolute timing bound with a 20% margin fails for reasons
+unrelated to the change under test and teaches people to re-run the suite. These
+are not targets, they are the line past which the per-cell path has grown a
+conversion or an allocation again — 150 ns animating, 25 ns settled, against
+46 and 6.7. Dropping the density table alone takes the settled figure to 32 ns
+and fails.
+
+**Not done here:** nothing draws a map yet, so this is exercised by
+`--term-check`, which lays the two fades out as time across the screen. Watching
+one cell age tests your memory of what the colour was a second ago; a ramp shows
+a discontinuity as a seam you can point at.
 
 ---
 

@@ -14,6 +14,7 @@
 #include "tui/capabilities.h"
 #include "tui/event_loop.h"
 #include "tui/framebuffer.h"
+#include "tui/heat_color.h"
 #include "tui/renderer.h"
 #include "tui/shm_cleanup.h"
 #include "tui/terminal.h"
@@ -163,7 +164,9 @@ public:
         fb.text(3, 8, "Keys seen: ", kInk, kPanel);
         fb.text(14, 8, keys_, kAccent, kPanel, hv::kAttrBold);
 
-        int row = 10;
+        draw_aging_ramps(fb, w);
+
+        int row = 12;
         fb.text(3, row++, animate_ ? "a: animation ON  - every frame redraws"
                                    : "a: animation off - idle frames are skipped",
                 animate_ ? kWarn : kMuted, kPanel);
@@ -213,6 +216,46 @@ public:
 
 private:
     static double us(std::uint64_t ns) { return static_cast<double>(ns) / 1000.0; }
+
+    /* M3.4's two fades with time laid out across the screen, so the whole
+     * timeline is visible at once. Watching one cell age tests your memory of
+     * what the colour was a second ago; a ramp shows a discontinuity as a seam
+     * you can point at, which is the only way to judge "smooth" by eye. */
+    void draw_aging_ramps(hv::Framebuffer &fb, int w) {
+        constexpr int kLabel = 16;
+        const int span = w - kLabel - 3;
+        if (span < 8) return;
+
+        const hv::HeatTimings t{};
+        const hv::HeatRamp    ramp{hv::kDefaultPalette, t};
+
+        hv::CellAggregate live{};
+        live.n_live        = 1;
+        live.live_bytes    = 2048; /* half of the 4 KiB cell assumed below */
+        live.last_alloc_ms = 0;
+
+        hv::CellAggregate gone{};
+        gone.last_free_ms = 0;
+
+        const auto steps      = static_cast<std::uint32_t>(span);
+        const auto alloc_span = t.malloc_pulse_ms + t.malloc_fade_ms;
+        const auto free_span  = t.free_flash_ms + t.free_fade_ms;
+
+        fb.text(3, 9,  "malloc  1.0s", kMuted, kPanel);
+        fb.text(3, 10, "free    2.3s", kMuted, kPanel);
+
+        for (int x = 0; x < span; ++x) {
+            const auto i = static_cast<std::uint32_t>(x);
+            fb.put(kLabel + x, 9,
+                   hv::Cell{glyphs_.full,
+                            ramp.color(live, 4096, alloc_span * i / steps),
+                            kPanel, 0});
+            fb.put(kLabel + x, 10,
+                   hv::Cell{glyphs_.full,
+                            ramp.color(gone, 4096, free_span * i / steps),
+                            kPanel, 0});
+        }
+    }
 
     hv::Capabilities caps_;
     hv::GlyphSet     glyphs_;
