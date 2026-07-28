@@ -78,21 +78,26 @@ COLORTERM= TERM=linux ./build/debug/heapviz --term-check   # 16-colour fallback
 ```
 
 `--term-check` is the manual counterpart to the pty tests: it is the only way to
-see whether a resize flickered, and `a` toggles animation so the idle path's
-skipped-frame counter can be watched doing its job. Since M3.1's legend and
-gutter landed it also carries a synthetic 4 MiB heap driven through the real
-`Grid`/`HeatMap`/`MapView`, so `a` is now also the map's churn switch — which
-makes it the workload M4.6 measures against.
+judge whether a resize *looked* right, and `a` toggles animation so the idle
+path's skipped-frame counter can be watched doing its job. Since M3.1's legend
+and gutter landed it also carries a synthetic 4 MiB heap driven through the real
+`Grid`/`HeatMap`/`MapView`, so `a` is now also the map's churn switch. That heap
+is `hv::DemoHeap` in `heapviz_core` rather than a local class, because
+`frame_budget` and `resize_storm` measure the same object this drives — a
+benchmark against a copy of the workload measures the copy.
 
 ### Preset differences that matter
 
 `asan` builds the TUI and tests only. ASan supplies its own malloc, so it cannot
 share a process with an `LD_PRELOAD` malloc hook; every preload-driven test is
-guarded by `if(NOT HEAPVIZ_ASAN)`. `interceptor_overhead` additionally only runs
-on optimised builds, because at `-O0` the interceptor costs 45-56 ns and
-straddles its own 50 ns budget.
+guarded by `if(NOT HEAPVIZ_ASAN)`. `interceptor_overhead` and `frame_budget`
+additionally only run on optimised builds, because both assert a cost budget and
+`-O0` blows through it: the interceptor costs 45-56 ns against its own 50 ns
+budget, and the per-cell colour interpolation alone spends most of the frame's
+1 ms. Both binaries still build everywhere, so they can be run by hand in debug
+to read the numbers.
 
-Expected test counts when everything passes: debug 21, release 22, asan 19.
+Expected test counts when everything passes: debug 22, release 24, asan 20.
 
 ## Architecture
 

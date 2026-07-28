@@ -127,6 +127,20 @@ target_link_libraries(event_loop_test PRIVATE heapviz_core)
 add_test(NAME event_loop COMMAND event_loop_test)
 set_tests_properties(event_loop PROPERTIES TIMEOUT 60)
 
+# --- Frame budget: 200x50 at 60 FPS under heavy churn (M4.6) ---------------
+# Runs the real event loop over the real map with a counting write(2), so the
+# number it prints is the one ROADMAP.md M4.6 records. Like
+# interceptor_overhead, only meaningful on an optimised build: the budget is a
+# claim about what ships, and at -O0 the per-cell colour interpolation alone
+# spends most of it.
+add_executable(frame_budget_test unit/frame_budget_test.cpp)
+heapviz_test_target(frame_budget_test)
+target_link_libraries(frame_budget_test PRIVATE heapviz_core)
+if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$" AND NOT HEAPVIZ_ASAN)
+  add_test(NAME frame_budget COMMAND frame_budget_test)
+  set_tests_properties(frame_budget PROPERTIES TIMEOUT 120)
+endif()
+
 # ===========================================================================
 # integration
 # ===========================================================================
@@ -171,6 +185,15 @@ heapviz_test_target(event_loop_pty_test)
 target_link_libraries(event_loop_pty_test PRIVATE heapviz_core util)
 add_test(NAME event_loop_pty COMMAND event_loop_pty_test)
 set_tests_properties(event_loop_pty PROPERTIES TIMEOUT 60)
+
+# --- A resize storm, read off the wire (M4.6) ------------------------------
+# The child writes real frames to the pty here, unlike event_loop_pty_test, so
+# the parent can assert on what a rapid resize actually emits.
+add_executable(resize_storm_test integration/resize_storm_test.cpp)
+heapviz_test_target(resize_storm_test)
+target_link_libraries(resize_storm_test PRIVATE heapviz_core util)
+add_test(NAME resize_storm COMMAND resize_storm_test)
+set_tests_properties(resize_storm PROPERTIES TIMEOUT 120)
 
 # --- Reaping rings left behind by SIGKILLed targets ------------------------
 add_executable(shm_cleanup_test integration/shm_cleanup_test.cpp)

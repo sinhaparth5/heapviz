@@ -12,6 +12,7 @@
 
 #include "common/heapviz_abi.h"
 #include "tui/capabilities.h"
+#include "tui/demo_heap.h"
 #include "tui/event_loop.h"
 #include "tui/framebuffer.h"
 #include "tui/heat_color.h"
@@ -25,7 +26,6 @@
 #include <string>
 #include <string_view>
 #include <unistd.h>
-#include <vector>
 
 namespace {
 
@@ -99,83 +99,6 @@ constexpr hv::Rgb kMuted  = 0x00707880;
 constexpr hv::Rgb kPanel  = 0x00101418;
 constexpr hv::Rgb kAccent = 0x0058C7F3;
 constexpr hv::Rgb kWarn   = 0x00F3B158;
-
-/* A synthetic heap for --term-check.
- *
- * M2.3 is what connects the map to a real target; until then there is no way to
- * look at M3 on a real terminal at all, and "the gutter labels are aligned" is
- * not a thing a unit test can tell you. This churns a 4 MiB address space
- * through the same Grid, HeatMap and MapView the real thing will use, so what is
- * on screen is the shipped code path with a fake event source rather than a
- * drawing of what it might look like.
- *
- * It also gives M4.6 its subject: heavy churn through a full-screen map is the
- * workload the 1 ms frame budget is supposed to survive. */
-class DemoHeap {
-public:
-    static constexpr std::uint64_t kBase = 0x55A0000000ull;
-    static constexpr std::uint64_t kSpan = 4u << 20;
-    static constexpr std::size_t   kMaxLive = 4096;
-
-    DemoHeap() {
-        live_.reserve(kMaxLive); /* once, so churning allocates nothing */
-        grid_.set_bounds(kBase, kBase + kSpan);
-    }
-
-    void fit(hv::Rect area) {
-        hv::fit_grid(grid_, area);
-        map_.configure(grid_);
-        /* A granularity change invalidates every aggregate, so replay what is
-         * live rather than showing an empty map until the next allocation. */
-        for (const Live &c : live_)
-            map_.on_alloc(c.addr, c.size, c.usable, now_ms_);
-    }
-
-    /* One frame's worth of allocator traffic. Returns true if anything moved. */
-    bool churn(std::uint32_t now_ms, unsigned ops) {
-        now_ms_ = now_ms;
-        for (unsigned i = 0; i < ops; ++i) {
-            const bool freeing = !live_.empty() &&
-                                 (live_.size() >= kMaxLive || (next() & 3u) == 0);
-            if (freeing) {
-                const std::size_t k = next() % live_.size();
-                const Live c = live_[k];
-                map_.on_free(c.addr, c.size, c.usable, now_ms);
-                live_[k] = live_.back();
-                live_.pop_back();
-            } else {
-                const auto size = static_cast<std::uint32_t>(32 + (next() % 2000));
-                const std::uint32_t usable = (size + 31u) & ~31u;
-                const std::uint64_t addr =
-                    kBase + ((next() % (kSpan - usable)) & ~std::uint64_t{15});
-                map_.on_alloc(addr, size, usable, now_ms);
-                live_.push_back(Live{addr, size, usable});
-            }
-        }
-        return ops != 0;
-    }
-
-    void seed(unsigned n) { churn(0, n); }
-
-    const hv::HeatMap &map() const noexcept { return map_; }
-
-private:
-    std::uint64_t next() noexcept {
-        rng_ += 0x9E3779B97F4A7C15ull;
-        std::uint64_t z = rng_;
-        z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
-        z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
-        return z ^ (z >> 31);
-    }
-
-    struct Live { std::uint64_t addr; std::uint32_t size; std::uint32_t usable; };
-
-    hv::Grid          grid_;
-    hv::HeatMap       map_;
-    std::vector<Live> live_;
-    std::uint64_t     rng_    = 0x243F6A8885A308D3ull;
-    std::uint32_t     now_ms_ = 0;
-};
 
 /* Hand-check for M4.1 through M4.5, drawn through the real framebuffer,
  * renderer and event loop. It exists so the terminal layer can be exercised
@@ -366,7 +289,7 @@ private:
     hv::Capabilities caps_;
     hv::GlyphSet     glyphs_;
     hv::MapView      view_;
-    DemoHeap         heap_;
+    hv::DemoHeap     heap_;
     std::string   keys_;
     std::uint64_t start_ns_ = 0;
     std::uint32_t now_ms_   = 0;

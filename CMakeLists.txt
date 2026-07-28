@@ -75,6 +75,7 @@ add_library(heapviz_core STATIC
   src/tui/heatmap.cpp
   src/tui/heat_color.cpp
   src/tui/map_view.cpp
+  src/tui/demo_heap.cpp
   src/tui/renderer.cpp
   src/tui/event_loop.cpp
   src/tui/shm_cleanup.cpp)
