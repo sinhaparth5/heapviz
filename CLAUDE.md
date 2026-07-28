@@ -36,7 +36,7 @@ CMake target names are not the output names, so `--target heapviz` fails:
 |---|---|---|
 | `heapviz_preload` | `libheapviz.so` | C11, never sanitized |
 | `heapviz_tui` | `heapviz` | thin `main.cpp` over `heapviz_core` |
-| `heapviz_core` | `libheapviz_core.a` | terminal/framebuffer/renderer/loop/cleanup; the tests link this so they exercise the shipped objects, not a recompile |
+| `heapviz_core` | `libheapviz_core.a` | everything in `src/tui/` except `main.cpp` — terminal, framebuffer, renderer, loop, the map pipeline, cleanup. The tests link this so they exercise the shipped objects, not a recompile |
 
 Run one test, or a subset:
 
@@ -70,7 +70,7 @@ The four that work:
 
 ```bash
 ./build/debug/heapviz --version                      # pinned by the tui_version test
-./build/debug/heapviz --term-check                   # drive M4.1-M4.5 against a real terminal
+./build/debug/heapviz --term-check                   # drive M3 and M4 against a real terminal
 ./build/debug/heapviz --term-check --debug-timing    # per-phase frame budget overlay
 ./build/debug/heapviz --cleanup                      # reap rings left by SIGKILLed targets
 ./build/debug/heapviz --term-check --no-unicode      # ASCII glyph fallback
@@ -193,6 +193,53 @@ whose producer pid is gone, so it is safe while other targets are being
 profiled. The reaper lives on the TUI side because `opendir`/`readdir` allocate,
 which ground rule #1 forbids inside the hook.
 
+### The map is a pipeline, and each stage owns one decision
+
+Five objects in `src/tui/` turn a stream of events into a screenful of colour.
+They are layered strictly downwards — each knows the ones above it and nothing
+below — so the place to add something is wherever the decision it needs already
+lives:
+
+| | Owns | Costs |
+|---|---|---|
+| `Grid` | address → cell. `cell_bytes` = next power of two ≥ `span / (cols*rows)`, clamped to [64 B, 1 GiB], so the mapping is a shift | a shift |
+| `ChunkTable` | which allocations are live, by pointer. Robin Hood, Fibonacci hashing, bounded memory | 25 ns lookup |
+| `HeatMap` | per-cell aggregates, folded in incrementally | ~30 ns/event |
+| `HeatRamp` | (aggregate, now) → `Rgb`, in Oklab | 6.7 ns settled, 46 ns animating |
+| `MapView` | what fits on screen, and the glyphs | ~25 ns/cell |
+
+Three properties hold the whole thing together, and each has a test that fails
+when it is broken:
+
+**One function decides the granularity.** `Grid::configure` is the only code
+that computes `cell_bytes`; `set_bounds` and `set_viewport` are two names for
+it, so a resize and a growing heap cannot arrive at different answers. One level
+up, `map_layout` in `map_view.cpp` is the only code that decides how many cells
+fit — the drawing area minus the address gutter minus the legend row — and
+`fit_grid` is how a caller applies it. A gutter that exists in the layout but
+not in the draw does not shift the display by a column; it labels row 7 with the
+address of row 6, which is a plausible-looking lie.
+
+**Colour is a pure function of (aggregate, now), never stored.** Cells age
+because the clock moved, not because anything swept them, so there are no timers
+and nothing to keep in sync. The corollary is that the map must repaint every
+cell every frame — which is affordable at 6.7 ns settled, and which M4.3's
+differ turns back into zero bytes when the colours came out the same.
+
+**A granularity change invalidates every aggregate.** `HeatMap::configure`
+returns true when a rebuild is needed, and `rebuild(table)` recomputes from the
+chunk table — the only correct response, and the only place the whole grid is
+touched. Everything else is incremental.
+
+Density is encoded twice, in the glyph *and* in the colour's brightness, because
+M4.4 degrades colour and `--no-unicode` degrades glyphs independently: on a
+16-colour terminal the shading carries it, and on a font with no block-drawing
+characters the colour does.
+
+`Grid::covers_whole_span()` is false when a span needs cells larger than 1 GiB.
+The legend says so rather than showing part of the heap as though it were all of
+it.
+
 ### The TUI is one thread on a frame deadline
 
 `src/tui/event_loop.cpp` owns the only loop: drain the ring, update the model,
@@ -200,12 +247,12 @@ draw, diff, write, then `poll(2)` on stdin until the next deadline. There is no
 render thread, which is what lets the ring stay single-consumer.
 
 The application side is the abstract `LoopApp` (`drain` / `update` / `key` /
-`animating` / `resized` / `draw`); M3's heap map will be an implementation of
-it. Everything the loop touches outside the process is a `LoopConfig` field —
-both file descriptors, `ioctl(TIOCGWINSZ)` as `size_fn`, `write(2)` as
-`writer` — which is why `tests/unit/event_loop_test.cpp` needs no terminal.
+`animating` / `resized` / `draw`). Everything the loop touches outside the
+process is a `LoopConfig` field — both file descriptors, `ioctl(TIOCGWINSZ)` as
+`size_fn`, `write(2)` as `writer` — which is why
+`tests/unit/event_loop_test.cpp` needs no terminal.
 
-Three things there are easy to break by accident:
+Four things there are easy to break by accident:
 
 - **A frame that changes nothing must produce no bytes.** The draw, the diff and
   the write are all skipped, and `Renderer::render` omits even the trailing SGR
@@ -216,6 +263,11 @@ Three things there are easy to break by accident:
 - **Buffers are reallocated at exactly one point**, the top of a frame, before
   the drain. A resize noticed anywhere else would move storage out from under a
   half-drawn frame.
+- **Quitting is the application's decision, not the loop's.** The loop feeds
+  every byte to `LoopApp::key` and nothing else; `q` means quit only because
+  `TermCheckApp::key` calls `hv::request_quit()`. A `LoopApp` that forgets it
+  runs to `max_frames` and looks like a hung test rather than a missing
+  keybinding.
 
 ## Naming and layout
 
@@ -239,7 +291,7 @@ new test go":
 
 | Directory | Holds |
 |---|---|
-| `unit/` | In-process and fast. No child processes, no `LD_PRELOAD`. |
+| `unit/` | In-process. No child processes, no `LD_PRELOAD`. Usually fast, but `ring_mpsc` and `frame_budget` are minutes-long stress and timing runs — the criterion is the process boundary, not the clock. |
 | `integration/` | Crosses a process boundary: `fork`/`exec`, a pty, or the preload. |
 | `fixtures/` | Programs that exist to be measured, not to assert. |
 | `support/` | Shared helpers, no `main()`. Included as `"support/..."`. |
@@ -259,6 +311,23 @@ Two real bugs hid behind wall clock alone: polling an fd that is permanently
 readable, and truncating the `poll` timeout to zero milliseconds (`poll` then
 returns `0` at once, which the loop reads as "the deadline arrived", so frames
 end early *and* spin).
+
+A paced loop costs about 1.5x what the same work costs in a tight loop, and the
+difference is not overhead anyone can delete. heapviz sleeps ~16 ms per frame,
+and its working set — two 160 KB cell buffers, a 65 KB output buffer, 10,000
+heat aggregates — does not survive that in cache, so every frame starts cold.
+`frame_budget` measures 450 µs of work but 700 µs of CPU per frame for exactly
+this reason. Benchmark the paced loop when the claim is about what heapviz
+costs; benchmark a tight loop only when the question is which phase got slower.
+
+Take the best of several runs, not the mean, when asserting a performance
+ceiling. Every source of noise here is additive — another process on the core, a
+migration, the cold-cache effect landing worse on one run — so the cheapest run
+is the least contaminated, while a real regression is in every run and moves the
+minimum too. Print the spread alongside: on a shared machine these vary by 25%,
+and a wall-clock gate honest enough not to flake will not catch a regression
+smaller than about 50%. That limit is worth stating in the test rather than
+tightening the gate until it flakes.
 
 `-O3` deletes allocations. GCC removes an alloc/write/free sequence whose
 contents are never read, which silently emptied the mmap path in release builds
