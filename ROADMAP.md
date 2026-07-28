@@ -15,13 +15,13 @@ concrete enough that "done" is not a judgement call.
 | M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
-| M3 | Sparse address representation | grid, hash table, aging | `[~]` | 12 / 24 |
+| M3 | Sparse address representation | grid, hash table, aging | `[~]` | 16 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[~]` | 31 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 100 / 209**
+**Total: 104 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -528,13 +528,57 @@ at the line.
 
 A cell covers many bytes and therefore many chunks. It needs one colour.
 
-- [ ] Per-cell aggregate: `live_bytes`, `n_live`, `last_alloc_ts`,
+- [x] Per-cell aggregate: `live_bytes`, `n_live`, `last_alloc_ts`,
       `last_free_ts`, `overhead_bytes`, `dominant_state`.
-- [ ] Precedence when a cell holds mixed states (this decides what the user
+- [x] Precedence when a cell holds mixed states (this decides what the user
       sees): recent free (red flash) > recent malloc (green pulse) > live
       (blue) > overhead marker (yellow) > empty (dark gray).
-- [ ] Incremental update on each event. Never rebuild the whole grid per frame.
-- [ ] Full rebuild only on granularity change.
+- [x] Incremental update on each event. Never rebuild the whole grid per frame.
+- [x] Full rebuild only on granularity change.
+
+#### M3.3 completion notes
+
+**`dominant_state` is a function, not a field.** The plan lists it among the
+stored aggregates, but storing it would make it a cached value that goes stale
+as the clock moves: a cell stops flashing red because 300 ms passed, not because
+anything updated it. Keeping it computed means there is no per-cell animation
+state to sweep or keep in sync, which is precisely what M3.4 needs to age
+colours without timers. `cell_state(aggregate, timings, now)` is a free function
+so the precedence table can be tested directly.
+
+**One precedence level is currently unreachable through the event path.**
+`Overhead` needs a cell holding chunk-header bytes and no payload. Through
+`on_alloc`/`on_free` alone, overhead always arrives attached to a live
+allocation, which outranks it; the level only becomes reachable when M2.2
+decodes real ptmalloc headers and can attribute header bytes to the cell they
+physically occupy. Until then `overhead_bytes` is `usable - size`, which is the
+best proxy available. Splitting the rule out as a free function is what lets the
+level be tested at all today.
+
+**A recent free outranks a newer malloc, deliberately.** The roadmap fixes the
+order and the test pins the awkward case explicitly: a free 100 ms ago beats a
+malloc 50 ms ago. Memory going away is what people watch for; an allocation
+landing is constant background. Worth revisiting in M6 if it reads badly on a
+real workload, but it is the specified behaviour and not an accident.
+
+**The incremental and rebuild paths disagree on recycled addresses, and that is
+structural.** The chunk table holds one record per address, so an address freed
+and then handed straight back no longer records that a free ever happened. The
+incremental path saw it and keeps the flash; a rebuild cannot know. Same
+category as an evicted freed record under the memory cap. Both are stated as
+tests rather than left to be discovered.
+
+Verified by `tests/unit/heatmap_test.cpp`, whose central check replays 40000
+events incrementally and requires the result to equal a rebuild from the chunk
+table, cell for cell. An accumulator that drifts is otherwise invisible: every
+number stays plausible, nothing asserts, and the display is simply wrong.
+
+Six mutations tried, five caught, one deleted rather than kept. The survivor was
+an explicit `now < stamp` guard against a timestamp from the future: no mutation
+of it could be made to fail, because the subtraction is unsigned and already
+wraps to ~2^32, which fails the window comparison on its own. It was a second
+spelling of what the arithmetic does, so it was removed rather than documented
+as untested. The property it was protecting is still pinned by a test.
 
 ### M3.4 Heatmap aging
 

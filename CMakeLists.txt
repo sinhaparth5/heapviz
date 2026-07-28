@@ -72,6 +72,7 @@ add_library(heapviz_core STATIC
   src/tui/capabilities.cpp
   src/tui/chunk_table.cpp
   src/tui/grid.cpp
+  src/tui/heatmap.cpp
   src/tui/renderer.cpp
   src/tui/event_loop.cpp
   src/tui/shm_cleanup.cpp)

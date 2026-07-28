@@ -79,6 +79,13 @@ target_link_libraries(grid_test PRIVATE heapviz_core)
 add_test(NAME grid COMMAND grid_test)
 set_tests_properties(grid PROPERTIES TIMEOUT 60)
 
+# --- Per-cell aggregation (M3.3) -------------------------------------------
+add_executable(heatmap_test unit/heatmap_test.cpp)
+heapviz_test_target(heatmap_test)
+target_link_libraries(heatmap_test PRIVATE heapviz_core)
+add_test(NAME heatmap COMMAND heatmap_test)
+set_tests_properties(heatmap PROPERTIES TIMEOUT 60)
+
 # --- Capability detection, quantisers and fallback (M4.4) ------------------
 # Detection takes the environment strings as arguments rather than reading
 # them, so this needs no setenv and cannot disturb the tests around it.
