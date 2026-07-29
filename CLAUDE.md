@@ -13,11 +13,16 @@ compiled separately and talk over POSIX shared memory:
 - `heapviz`, a C++20 TUI that maps the same segment, drains the ring, and draws
   the heap.
 
-`heap-doc.md` is the design intent. `ROADMAP.md` is the executable plan: 209
+`ROADMAP.md` is the executable plan and the only design document left: 209
 checkboxes across M0 to M7, with a progress table at the top that must be kept
-accurate. Read the roadmap's "Ground rules" section before touching the
-interceptor or the render path; those six invariants are what make the design
-work, and violating one is a bug even when the tests pass.
+accurate. Read its "Ground rules" section before touching the interceptor or the
+render path; those six invariants are what make the design work, and violating
+one is a bug even when the tests pass.
+
+`heap-doc.md` does not exist. It was the original design intent and was deleted
+in `d3babdb` once its content had been absorbed into the roadmap, but
+`ROADMAP.md` and `CHANGELOG.md` still refer to it in passing. Those references
+are stale; do not go looking for the file, and do not add new ones.
 
 ## Build and test
 
@@ -66,7 +71,8 @@ cannot exit and unlink its segment before anyone attaches).
 ### What the `heapviz` binary can actually do today
 
 Attach (`--pid`, `-- <cmd>`) is M2.3 and unimplemented; those arguments exit 2.
-The four that work:
+Four commands work — `--version` (`-V`), `--help` (`-h`), `--term-check`, and
+`--cleanup` — plus two modifiers, `--debug-timing` and `--no-unicode`:
 
 ```bash
 ./build/debug/heapviz --version                      # pinned by the tui_version test
@@ -77,9 +83,17 @@ The four that work:
 COLORTERM= TERM=linux ./build/debug/heapviz --term-check   # 16-colour fallback
 ```
 
+Only `argv[1]` selects the command, while the modifiers are scanned across the
+whole argv so either order works. Anything else in `argv[1]` prints "not
+implemented yet" and exits 2, which is what makes the unimplemented flags
+distinguishable from the working ones.
+
 `--term-check` is the manual counterpart to the pty tests: it is the only way to
-judge whether a resize *looked* right, and `a` toggles animation so the idle
-path's skipped-frame counter can be watched doing its job. Since M3.1's legend
+judge whether a resize *looked* right. `a` toggles animation so the idle path's
+skipped-frame counter can be watched doing its job, `t` toggles the timing
+overlay `--debug-timing` starts on, and `q` quits. The map's geometry is
+deliberately fixed below row 19 rather than packed under the text, so toggling
+the overlay cannot re-bucket the address space on a keypress. Since M3.1's legend
 and gutter landed it also carries a synthetic 4 MiB heap driven through the real
 `Grid`/`HeatMap`/`MapView`, so `a` is now also the map's churn switch. That heap
 is `hv::DemoHeap` in `heapviz_core` rather than a local class, because
@@ -358,3 +372,18 @@ diff. Keybinding changes count as breaking.
 When adding a test that guards an invariant, verify it can fail. Break the thing
 it protects, watch the test go red, then restore. Several guards here passed
 vacuously until that was done.
+
+Every `.c`, `.h`, and `.cpp` file in the repo opens with the same four-line
+block, without exception — a one-line description naming the milestone that
+introduced it, a blank comment line, `Copyright (C) 2026 Parth Sinha`, and
+`SPDX-License-Identifier: GPL-3.0-or-later`. New files carry it too.
+
+Commit subjects are `M<milestone>.<task>: <lowercase summary>` when the commit
+completes a roadmap box (`M3.3: per-cell aggregation`), and the body explains
+the decision rather than restating the diff.
+
+Comments here explain *why*, at some length, and the existing files set the
+density: `preload.c` and `event_loop.cpp` justify their ordering constraints in
+prose. Match that. A comment that says what the next line does is noise; one
+that says which bug the line prevents is the reason this codebase is
+maintainable.
