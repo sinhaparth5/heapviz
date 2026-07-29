@@ -71,6 +71,7 @@ add_library(heapviz_core STATIC
   src/tui/framebuffer.cpp
   src/tui/capabilities.cpp
   src/tui/chunk_table.cpp
+  src/tui/proc_maps.cpp
   src/tui/grid.cpp
   src/tui/heatmap.cpp
   src/tui/heat_color.cpp

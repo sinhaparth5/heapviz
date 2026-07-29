@@ -111,7 +111,7 @@ budget, and the per-cell colour interpolation alone spends most of the frame's
 1 ms. Both binaries still build everywhere, so they can be run by hand in debug
 to read the numbers.
 
-Expected test counts when everything passes: debug 22, release 24, asan 20.
+Expected test counts when everything passes: debug 23, release 25, asan 21.
 
 ## Architecture
 

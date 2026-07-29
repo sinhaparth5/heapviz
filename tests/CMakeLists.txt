@@ -72,6 +72,16 @@ target_link_libraries(chunk_table_test PRIVATE heapviz_core)
 add_test(NAME chunk_table COMMAND chunk_table_test)
 set_tests_properties(chunk_table PROPERTIES TIMEOUT 180)
 
+# --- Virtual memory segment scanner (M2.1) ---------------------------------
+# Mostly driven through `scan_text` with literal /proc output, so it needs no
+# target process; the one case that reads a real file reads our own map, which
+# keeps it in unit/ rather than integration/.
+add_executable(proc_maps_test unit/proc_maps_test.cpp)
+heapviz_test_target(proc_maps_test)
+target_link_libraries(proc_maps_test PRIVATE heapviz_core)
+add_test(NAME proc_maps COMMAND proc_maps_test)
+set_tests_properties(proc_maps PROPERTIES TIMEOUT 60)
+
 # --- Address space bucketizer (M3.1) ---------------------------------------
 add_executable(grid_test unit/grid_test.cpp)
 heapviz_test_target(grid_test)

@@ -121,6 +121,15 @@ promise about the ABI or the CLI surface.
   through the real map, which is the only way to see M3 until attaching lands.
 - README notes `reset` / `stty sane` for the one case nothing can guard
   against, `kill -9`.
+- heapviz can now read a target's memory map, which is what tells it where the
+  heap actually is rather than inferring bounds from the addresses it happens
+  to have seen. It distinguishes the main `[heap]` from thread arenas and from
+  ordinary mmap'd memory, so the header bar can name the arenas a program is
+  allocating from, and it re-reads the map twice a second and immediately
+  whenever an allocation lands outside the range it knew about — so a heap that
+  grows mid-frame is on screen in the next one. A target that exits while being
+  watched is reported as exited, with its last known map kept so the display
+  can still be read. None of this is visible until attaching lands.
 
 ### Changed
 

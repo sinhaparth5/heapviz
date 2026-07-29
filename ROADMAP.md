@@ -14,14 +14,14 @@ concrete enough that "done" is not a judgement call.
 |---|-----------|-------|--------|------|
 | M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
-| M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[ ]` | 0 / 17 |
+| M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[~]` | 6 / 17 |
 | M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[x]` | 34 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 115 / 209**
+**Total: 121 / 209**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -332,20 +332,36 @@ Other deviations:
 
 ### M2.1 Virtual memory segment scanner
 
-- [ ] `/proc/<pid>/maps` line parser: `start-end perms offset dev inode path`.
+- [x] `/proc/<pid>/maps` line parser: `start-end perms offset dev inode path`.
       Hand-rolled, no `sscanf` in the hot path (it is called on a timer).
-- [ ] Classify regions: `[heap]` (brk), anonymous `rw-p` (mmap'd chunks),
-      `[stack]`, file-backed (ignore for the map).
-- [ ] Track the union bounds `heap_start` / `heap_end` shown in the header bar.
-- [ ] Re-scan trigger: (a) every 500 ms, and (b) immediately when an event
+      `parse_maps_line` in `src/tui/proc_maps.cpp`. The path is the remainder of
+      the line rather than the next token, so a mapped file with a space in its
+      name and the ` (deleted)` suffix both survive.
+- [x] Classify regions: `[heap]` (brk), anonymous `rw-p` (mmap'd chunks),
+      `[stack]`, file-backed (ignore for the map). By name first and only then
+      by permissions: `[heap]` is anonymous `rw-p` too, and classifying on the
+      permissions would lose the one region the kernel names for us. A
+      `PROT_NONE` arena reservation is not allocatable, so it is not counted.
+- [x] Track the union bounds `heap_start` / `heap_end` shown in the header bar.
+      Kept alongside the region list rather than replacing it: the union of a
+      brk heap at `0x55...` and an arena at `0x7f...` is the 47-bit span that
+      `Grid::covers_whole_span` goes false on, so the per-region view has to
+      survive for the grid to use later.
+- [x] Re-scan trigger: (a) every 500 ms, and (b) immediately when an event
       arrives with `ptr` outside current bounds. Condition (b) is what keeps the
-      display correct when the heap grows mid-frame.
-- [ ] Handle the target exiting mid-read: `open` returns `ENOENT`, or a read
+      display correct when the heap grows mid-frame. `due` / `note_address`,
+      kept free of I/O so the policy is testable without a target.
+- [x] Handle the target exiting mid-read: `open` returns `ENOENT`, or a read
       returns `ESRCH`. Switch the UI to a "target exited" state rather than
-      dying.
-- [ ] Detect the active arena: main arena (from `[heap]`) vs. thread arenas
+      dying. A failed scan still resets the timer and `note_address` ignores a
+      dead target, so a finished process is polled twice a second rather than
+      sixty times; the last known map is kept, because M2.3 freezes the last
+      frame and cannot do that from an empty region list.
+- [x] Detect the active arena: main arena (from `[heap]`) vs. thread arenas
       (64 MiB-aligned mmap regions). The header bar shows `Active Arena: Main`,
-      so the multi-arena case needs at least a correct label.
+      so the multi-arena case needs at least a correct label. The alignment is a
+      heuristic and the label is all that is computed from it; under ASan there
+      is no `[heap]` at all and the honest answer is `None`.
 
 ### M2.2 Chunk metadata inspection
 
@@ -1371,3 +1387,12 @@ The reasoning: get the bootstrap problem and the ring buffer done first (they
 are the highest-risk items), then get *something on screen* early so every
 subsequent milestone has visible feedback. M2 lands late because D2 makes it
 an enhancement rather than a dependency.
+
+**Amended after M4.** M2 was brought forward ahead of M5, for two reasons. D5
+supersedes the argument above: M2.2 is not an enhancement, it is the only
+ground-truth resync there is, so "M2 is not a dependency" was only ever true of
+a design without a drop-recovery story. And M5 is 33 boxes of inspector,
+telemetry and fragmentation UI that all read live chunk data, while nothing yet
+connects the ring to `ChunkTable` — the map pipeline is still driven by
+`DemoHeap`. Building M5 against a synthetic heap means building it twice. The
+order from here is M2 → M5 → M6 → M7.
