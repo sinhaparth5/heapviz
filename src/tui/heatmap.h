@@ -37,6 +37,7 @@
 
 #include "tui/chunk_table.h"
 #include "tui/grid.h"
+#include "tui/region_map.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -102,6 +103,15 @@ struct CellAggregate {
 CellState cell_state(const CellAggregate &a, const HeatTimings &t,
                      std::uint32_t now_ms) noexcept;
 
+/* The overhead an allocation contributes, from the interceptor's figures alone:
+ * what the allocator made usable minus what the caller asked for. An
+ * approximation of the truth -- it cannot see the chunk header, and it cannot
+ * see size-class rounding beyond the usable boundary -- which M2.2's
+ * `ChunkReader` replaces with the exact figure where ptrace permits.
+ *
+ * Exposed so the enrichment pass can compute the value it is replacing. */
+std::uint32_t overhead_of(std::uint32_t size, std::uint32_t usable) noexcept;
+
 class HeatMap {
 public:
     /* Points the map at a grid. Resizes and clears only when the geometry
@@ -132,6 +142,17 @@ public:
     void on_free(std::uint64_t ptr, std::uint32_t size, std::uint32_t usable,
                  std::uint32_t now_ms) noexcept;
 
+    /* Swaps one chunk's approximate overhead contribution for the exact one
+     * read out of the target (M2.2). `from` is what `on_alloc` folded in, `to`
+     * is what the chunk header says the allocator really spent.
+     *
+     * A delta rather than a recomputation because a cell holds the sum over
+     * every chunk in it and cannot attribute any part of that sum to one
+     * pointer. The caller must therefore apply each correction exactly once,
+     * which is what `kChunkFlagRefined` is for. */
+    bool refine_overhead(std::uint64_t ptr, std::uint32_t from,
+                         std::uint32_t to) noexcept;
+
     /* The precedence rule. Pure in (aggregate, now), so the same cell yields a
      * different answer as the clock moves with nothing having updated it. */
     CellState state_at(std::size_t index, std::uint32_t now_ms) const noexcept;
@@ -139,6 +160,24 @@ public:
     const CellAggregate &at(std::size_t index) const noexcept;
     std::size_t cell_count() const noexcept { return cells_.size(); }
     const Grid &grid() const noexcept { return grid_; }
+
+    /* Points the map at a packed coordinate space (M2.4). When set, every
+     * address is translated through it before being bucketed, so the grid
+     * measures heap bytes rather than the distance between the lowest and
+     * highest address a target happens to use.
+     *
+     * Optional, and null is not a degraded mode: with no RegionMap the address
+     * *is* the coordinate, which is what `DemoHeap` and every test written
+     * before M2.4 assume. The pointer is not owned, and must outlive the map --
+     * in practice both live in `HeapApp`. */
+    void set_regions(const RegionMap *r) noexcept { regions_ = r; }
+    const RegionMap *regions() const noexcept { return regions_; }
+
+    /* The coordinate `ptr` buckets under: itself, or its packed offset. False
+     * when a RegionMap is set and does not contain the address, which is how a
+     * pointer into a region heapviz has not scanned yet is dropped rather than
+     * landing in an unrelated cell. */
+    bool coordinate_of(std::uint64_t ptr, std::uint64_t &out) const noexcept;
 
     void set_timings(const HeatTimings &t) noexcept { timings_ = t; }
     const HeatTimings &timings() const noexcept { return timings_; }
@@ -156,6 +195,7 @@ public:
 private:
     CellAggregate *cell_for(std::uint64_t ptr) noexcept;
 
+    const RegionMap           *regions_ = nullptr;
     Grid                       grid_;
     std::vector<CellAggregate> cells_;
     HeatTimings                timings_ = kDefaultTimings;

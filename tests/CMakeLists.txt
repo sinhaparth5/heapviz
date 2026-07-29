@@ -82,6 +82,15 @@ target_link_libraries(proc_maps_test PRIVATE heapviz_core)
 add_test(NAME proc_maps COMMAND proc_maps_test)
 set_tests_properties(proc_maps PROPERTIES TIMEOUT 60)
 
+# --- ptmalloc chunk headers via process_vm_readv (M2.2) --------------------
+# The live half reads this process's own chunks, which is the same syscall and
+# the same permission check as reading another process, so it needs no child.
+add_executable(chunk_reader_test unit/chunk_reader_test.cpp)
+heapviz_test_target(chunk_reader_test)
+target_link_libraries(chunk_reader_test PRIVATE heapviz_core)
+add_test(NAME chunk_reader COMMAND chunk_reader_test)
+set_tests_properties(chunk_reader PROPERTIES TIMEOUT 60)
+
 # --- Packing scattered regions into one display space (M2.4) ---------------
 add_executable(region_map_test unit/region_map_test.cpp)
 heapviz_test_target(region_map_test)

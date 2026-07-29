@@ -174,6 +174,8 @@ void MapView::draw(Framebuffer &fb, Rect area, const HeatMap &map,
     const int rows = g.rows() < l.cells.h ? g.rows() : l.cells.h;
     const int cols = g.cols() < l.cells.w ? g.cols() : l.cells.w;
     const std::uint64_t cell_bytes = g.cell_bytes();
+    const std::uint64_t row_bytes =
+        cell_bytes * static_cast<std::uint64_t>(g.cols());
 
     char label[kGutterWidth + 1];
 
@@ -181,8 +183,35 @@ void MapView::draw(Framebuffer &fb, Rect area, const HeatMap &map,
         const int y = l.cells.y + row;
 
         if (l.gutter_x >= 0) {
-            format_offset(label, sizeof label, g.offset_of_row(row));
-            fb.text(l.gutter_x, y, label, style_.dim, style_.bg);
+            /* With a RegionMap the grid coordinate is a packed offset, and an
+             * offset from the top of the map would run straight across a seam
+             * between two arenas that are terabytes apart -- a label that is
+             * arithmetically consistent and describes nothing. So the label is
+             * the offset within whichever region the row falls in, restarting
+             * at each one, and the seam itself is marked.
+             *
+             * Without one the coordinate is the address, and this is M3.1's
+             * original offset-from-base. */
+            const std::uint64_t coord = g.offset_of_row(row);
+            const RegionMap *rm = map.regions();
+            const Span *span = rm != nullptr ? rm->span_at_flat(coord) : nullptr;
+
+            Rgb ink = style_.dim;
+            if (rm == nullptr) {
+                format_offset(label, sizeof label, coord);
+            } else if (span != nullptr) {
+                format_offset(label, sizeof label, coord - span->flat);
+                /* A row that starts a new region, or that straddles the start
+                 * of one, is where the address jumps. Marked in the accent
+                 * colour so two arenas cannot read as one contiguous heap. */
+                if (span->flat >= coord && span->flat < coord + row_bytes)
+                    ink = style_.warn;
+            } else {
+                /* Past the end of the packed space: the grid has more rows than
+                 * the target has heap. Blank rather than a misleading zero. */
+                label[0] = '\0';
+            }
+            fb.text(l.gutter_x, y, label, ink, style_.bg);
         }
 
         const auto base = static_cast<std::size_t>(row) *

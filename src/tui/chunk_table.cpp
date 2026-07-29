@@ -290,6 +290,23 @@ bool ChunkTable::insert_live(std::uint64_t key, std::uint32_t size,
     return true;
 }
 
+bool ChunkTable::mark_refined(std::uint64_t key,
+                              std::uint32_t exact_overhead) noexcept {
+    if (exact_overhead > UINT16_MAX) return false;
+    Chunk *c = find(key);
+    if (c == nullptr) return false;
+    c->overhead_exact = static_cast<std::uint16_t>(exact_overhead);
+    c->flags = static_cast<std::uint8_t>(c->flags | kChunkFlagRefined);
+    return true;
+}
+
+void ChunkTable::clear_refined() noexcept {
+    for (Chunk &c : slots_) {
+        c.flags = static_cast<std::uint8_t>(c.flags & ~kChunkFlagRefined);
+        c.overhead_exact = 0;
+    }
+}
+
 bool ChunkTable::mark_freed(std::uint64_t key, std::uint32_t free_ms) noexcept {
     Chunk *c = find(key);
     if (c == nullptr) return false;

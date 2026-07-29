@@ -18,14 +18,14 @@ this document is the record; nothing below should send a reader looking for it.
 |---|-----------|-------|--------|------|
 | M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
-| M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[~]` | 11 / 20 |
+| M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[x]` | 20 / 20 |
 | M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[x]` | 34 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 126 / 212**
+**Total: 135 / 212**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -384,22 +384,46 @@ Note: M1.5's `malloc_usable_size` already gives you real size for free. This
 section is for the overhead visualisation (the yellow `====` markers) and
 for inspecting chunks the interceptor never saw.
 
-- [ ] `process_vm_readv()` reader with a scatter/gather batch interface: one
-      syscall for many chunk headers, not one per chunk.
-- [ ] ptmalloc chunk decode: header sits at `ptr - 2 * sizeof(size_t)`.
+- [x] `process_vm_readv()` reader with a scatter/gather batch interface: one
+      syscall for many chunk headers, not one per chunk. `ChunkReader` in
+      `src/tui/chunk_reader.cpp`; measured at 200 headers per syscall, capped by
+      the kernel's 1024-vector limit.
+- [x] ptmalloc chunk decode: header sits at `ptr - 2 * sizeof(size_t)`.
       `prev_size` then `size`. Real size = `size & ~0x7`. Flags in the low 3
       bits: `PREV_INUSE = 1`, `IS_MMAPPED = 2`, `NON_MAIN_ARENA = 4`.
-- [ ] Sanity-check decoded sizes (16-byte aligned, ≥ 32, ≤ region span) and
+      Careful: the header is *read* two words back but an in-use chunk only
+      *costs* one, because the user data runs into the next chunk's
+      `prev_size`. Using the read offset as the size floor rejected almost
+      exactly half of all real allocations.
+- [x] Sanity-check decoded sizes (16-byte aligned, ≥ 32, ≤ region span) and
       discard implausible ones. Reading a raced-on header gives garbage; garbage
-      must not reach the renderer.
-- [ ] Overhead = `chunk_size - requested_size`. This drives the yellow markers.
-- [ ] Permission handling: `process_vm_readv` needs same-uid or
+      must not reach the renderer. Per chunk, not per batch: one bad header must
+      not discard the other 999. The read buffer is zeroed each pass so a failed
+      batch decodes as zeros and is refused, rather than decoding the previous
+      pass's headers as chunks belonging to these addresses.
+- [x] Overhead = `chunk_size - requested_size`. This drives the yellow markers.
+      `HeapApp::enrich` corrects a bounded slice of the live set every 250 ms,
+      round-robin over the chunk table, so a large live set never puts a hundred
+      syscalls in one frame. Measured: ~3900 chunks corrected in 9 syscalls.
+
+      Two things make it correct rather than merely present, and both were found
+      by the test rather than by reading it. A correction is a *delta* on a cell
+      that cannot attribute its sum to any one pointer, so it has to be applied
+      exactly once (`kChunkFlagRefined`) and *reversed* when the chunk is freed
+      -- otherwise `on_free` removes the approximate figure the cell no longer
+      holds, and the difference accumulates on every free. That bug sat at 75
+      bytes of overhead per chunk and climbing, against a real average of 30.
+      The exact figure is therefore stored on the record, in the two bytes that
+      were already padding; `Chunk` stays 32 bytes.
+- [x] Permission handling: `process_vm_readv` needs same-uid or
       `CAP_SYS_PTRACE`, and `/proc/sys/kernel/yama/ptrace_scope = 1` blocks
       non-descendant attach. On `EPERM`, degrade to interceptor-only data and
       show a one-line hint in the UI (`ptrace denied: overhead unavailable`)
-      instead of failing.
-- [ ] Never `PTRACE_ATTACH` in the steady path; it stops the target. If ptrace
-      is ever needed, it is opt-in behind a flag.
+      instead of failing. Latched: the permission cannot appear later in a
+      session, so retrying it is a syscall per frame known in advance to fail.
+- [x] Never `PTRACE_ATTACH` in the steady path; it stops the target. If ptrace
+      is ever needed, it is opt-in behind a flag. Structural rather than a
+      policy: nothing in `heapviz_core` links or calls `ptrace` at all.
 
 ### M2.3 Attach lifecycle
 
@@ -443,19 +467,30 @@ between them and hold perhaps 40 MiB: the grid clamps to 1 GiB cells,
 `Grid::covers_whole_span` goes false, and the display becomes one occupied cell
 in a screenful of hole. That was measured, not predicted.
 
-- [~] Compact the allocatable regions into one contiguous coordinate space, so
+- [x] Compact the allocatable regions into one contiguous coordinate space, so
       the grid buckets total heap bytes rather than the distance between the
-      lowest and highest address. `RegionMap` in `src/tui/region_map.cpp` does
-      the packing and the two conversions, with `region_map_test` holding the
-      bijection across whole regions rather than at samples. Not yet wired into
-      the display: `HeatMap` and `MapView` still take real addresses, so the
-      box stays open until they take packed ones.
-- [ ] Gutter labels become per-region: a row's label is the real address in
-      whichever region that row falls in, and region boundaries are marked.
-      Without this the gutter is a plausible-looking lie, which M3.1 already
-      calls the worst failure the map can have.
-- [ ] Decide what a granularity change means when regions come and go, since
+      lowest and highest address. `RegionMap` in `src/tui/region_map.cpp`, wired
+      through `HeatMap::set_regions`. Measured on a four-thread `churn`: ten
+      regions packed into 38 MiB with 16 KiB cells, where the union gave 1 GiB
+      cells. The translator is optional and null means "the address is the
+      coordinate", which is what `DemoHeap` and every pre-M2.4 test assume.
+- [x] Gutter labels become per-region: a row's label is the offset within
+      whichever region that row falls in, restarting at each one, and the row
+      where a region starts is marked in the accent colour. An offset from the
+      top of the packed map would run straight across a seam between arenas
+      terabytes apart -- arithmetically consistent and describing nothing, which
+      is exactly the plausible-looking lie M3.1 warns about. Region-relative
+      offsets keep the gutter at seven columns; a full address would not fit.
+- [x] Decide what a granularity change means when regions come and go, since
       every arena appearing would otherwise re-bucket the whole display.
+      **Decided:** `RegionMap::rebuild` returns whether the layout actually
+      moved, and only a move triggers `HeatMap::configure` + `rebuild`. A scan
+      that finds what the last one found -- the common case, twice a second for
+      the life of the session -- costs nothing. A region growing does shift
+      every region above it and does force a full rebuild; that is correct
+      rather than avoidable, since those cells now describe memory that is no
+      longer at that offset. `RegionMap::repacks()` and `HeatMap::rebuilds()`
+      are both exposed so the frequency can be measured rather than guessed at.
 
 ---
 

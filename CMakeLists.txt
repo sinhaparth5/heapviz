@@ -72,6 +72,7 @@ add_library(heapviz_core STATIC
   src/tui/capabilities.cpp
   src/tui/chunk_table.cpp
   src/tui/proc_maps.cpp
+  src/tui/chunk_reader.cpp
   src/tui/region_map.cpp
   src/tui/session.cpp
   src/tui/heap_app.cpp
@@ -85,6 +86,13 @@ add_library(heapviz_core STATIC
   src/tui/shm_cleanup.cpp)
 target_compile_options(heapviz_core PRIVATE ${HEAPVIZ_WARNINGS})
 target_link_libraries(heapviz_core PUBLIC heapviz_abi)
+
+# process_vm_readv is a GNU extension, and <sys/uio.h> hides it behind
+# _GNU_SOURCE. Set on the one file that needs it rather than on the library, so
+# the other fifteen keep compiling against plain POSIX.1-2008 and cannot pick up
+# a glibc-only function by accident.
+set_source_files_properties(src/tui/chunk_reader.cpp
+  PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
 
 # ---------------------------------------------------------------------------
 # heapviz - the TUI consumer.

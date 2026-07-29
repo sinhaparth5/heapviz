@@ -39,7 +39,7 @@ std::uint32_t clamp_u32(std::uint64_t v) noexcept {
 
 HeapApp::HeapApp(RingSession &session, Capabilities caps)
     : session_(session), caps_(caps), view_(caps),
-      scanner_(session.pid()) {
+      scanner_(session.pid()), reader_(session.pid()) {
     batch_.resize(kMaxEventsPerFrame); /* once; draining allocates nothing */
 
     /* The clock origin is attach time, not the producer's start time. Anchoring
@@ -57,6 +57,11 @@ HeapApp::HeapApp(RingSession &session, Capabilities caps)
     }
 
     table_.reserve(1 << 16);
+
+    enrich_ptrs_.reserve(kEnrichPerPass);
+    enrich_want_.reserve(kEnrichPerPass);
+    enrich_approx_.reserve(kEnrichPerPass);
+    enrich_out_.resize(kEnrichPerPass);
 }
 
 std::uint32_t HeapApp::event_ms(std::uint64_t timestamp_ns) const noexcept {
@@ -94,6 +99,14 @@ void HeapApp::apply(const HvEvent *events, std::uint32_t n) noexcept {
              * is unknown when it does. */
             const Chunk *c = table_.find(e.ptr);
             if (c != nullptr) {
+                /* Undo any exact-overhead correction before the free removes
+                 * the approximate one. The cell holds a sum it cannot
+                 * attribute, so a correction applied on alloc and not reversed
+                 * on free leaves its difference behind permanently -- which
+                 * shows up as overhead per chunk drifting upward all session. */
+                if ((c->flags & kChunkFlagRefined) != 0)
+                    map_.refine_overhead(e.ptr, c->overhead_exact,
+                                         overhead_of(c->size, c->usable));
                 if (c->state == kChunkLive) {
                     if (live_ != 0) --live_;
                     live_bytes_ -= std::min<std::uint64_t>(live_bytes_, c->usable);
@@ -111,11 +124,6 @@ void HeapApp::apply(const HvEvent *events, std::uint32_t n) noexcept {
         }
 
         const std::uint32_t size = clamp_u32(e.size);
-
-        /* A rolling window of where allocations are landing, which is what
-         * decides the displayed region. One store per event, no branch. */
-        recent_[recent_at_] = e.ptr;
-        recent_at_ = (recent_at_ + 1) & (kRecentAddrs - 1);
 
         /* Counted here rather than read off the HeatMap, which only knows about
          * the one region being displayed. A target allocating mostly from
@@ -156,9 +164,9 @@ bool HeapApp::update(std::uint64_t now_ns) {
 
     if (scanner_.due(now_ms_)) {
         scanner_.scan(now_ms_);
-        const AddrRange b = choose_view();
-        if (!b.empty() && (b.base != bounds_.base || b.end != bounds_.end)) {
-            bounds_ = b;
+        if (repack()) {
+            /* The layout moved, so every cell now describes memory that is no
+             * longer at that offset. Only a full rebuild fixes that. */
             geometry_dirty_ = true;
             changed = true;
         }
@@ -169,83 +177,125 @@ bool HeapApp::update(std::uint64_t now_ns) {
         changed = true;
     }
 
+    if (enrich(now_ms_)) changed = true;
+
     return changed;
 }
 
-/* Which region the map is pointed at.
+/* Repacks the regions into one contiguous display space.
  *
- * Not the union of them, which is what the header bar reports and what the
- * first version of this used. A brk heap at 0x5b... and a thread arena at
- * 0x70... span 23 TiB between them and are perhaps 40 MiB of actual memory: the
- * grid clamps to 1 GiB cells, `covers_whole_span` goes false, and every
- * allocation past the first gigabyte falls off a map that is drawing one cell
- * of heap and several thousand cells of hole. `Grid`'s own comment names this
- * as the case M2 has to fix.
+ * This replaced M2.3's choose-one-region, and the reason is worth keeping: the
+ * union of a brk heap at 0x5b... and a thread arena at 0x70... is 23 TiB of
+ * which perhaps 40 MiB is memory, so `Grid` clamped to 1 GiB cells and drew one
+ * occupied cell in a screenful of hole. Picking a single region instead avoided
+ * that but showed a threaded target's main arena, which is reliably the empty
+ * one -- glibc gives every allocating thread its own.
  *
- * So, per D3, v0.1 displays the main arena and says how many regions it is not
- * showing. Compacting every allocatable region into one contiguous view is the
- * right long-term answer and is ROADMAP M2.4; it is a change to what an address
- * on screen means, which is more than the attach lifecycle should be deciding.
+ * Packing them end to end means the grid measures heap bytes, and every arena
+ * is on screen at once. The cost is that a flat offset is not an address, which
+ * is why `MapView`'s gutter converts back through the same map.
+ */
+bool HeapApp::repack() noexcept {
+    const bool moved = regions_.rebuild(scanner_.regions());
+
+    /* Nothing is hidden any more: every allocatable region is on the map. The
+     * count is kept so the header can say how many arenas are in view, which is
+     * the thing a user of a threaded program actually wants to know. */
+    hidden_regions_ = 0;
+    bounds_ = regions_.empty()
+                  ? AddrRange{}
+                  : AddrRange{0, regions_.total_bytes()};
+    return moved;
+}
+
+/* Corrects a slice of the live set's overhead from the target's own chunk
+ * headers (M2.2).
  *
- * The fallback for a target with no [heap] -- one allocating purely from thread
- * arenas, or from something that is not glibc -- is the largest allocatable
- * region, on the grounds that it is where most of the memory is. */
-AddrRange HeapApp::choose_view() noexcept {
-    const Region *best = nullptr;
-    unsigned best_score = 0;
-    unsigned current_score = 0;
-    int count = 0;
+ * The interceptor reports `usable`, which is what the caller may safely write.
+ * The chunk is bigger than that: a header, plus whatever the allocator rounded
+ * up to. `usable - size` is therefore an underestimate of what a program is
+ * really costing, and the gap is exactly what the overhead display is for.
+ *
+ * Bounded and resumable rather than a full sweep, because the live set can be
+ * hundreds of thousands of chunks and a header read is a syscall per thousand.
+ * The cursor walks the table's slots and picks up where it left off.
+ */
+bool HeapApp::enrich(std::uint32_t now_ms) noexcept {
+    if (!reader_.available() || state_ != SessionState::Live) return false;
+    if (static_cast<std::uint32_t>(now_ms - enrich_last_ms_) < kEnrichIntervalMs)
+        return false;
+    enrich_last_ms_ = now_ms;
 
-    for (const Region &r : scanner_.regions()) {
-        if (!r.allocatable() || r.size() == 0) continue;
-        ++count;
+    const Chunk *slots = table_.slots();
+    const std::size_t n = table_.slot_count();
+    if (n == 0) return false;
 
-        /* Score each region by how much of the recent traffic landed in it.
-         * The obvious rule -- show `[heap]` -- is wrong for most real targets:
-         * glibc gives every thread that allocates its own arena, so a program
-         * with a single worker thread has a main arena holding almost nothing
-         * and a thread arena holding everything. Preferring the named region
-         * would reliably display the empty one.
-         *
-         * A fixed window of recent addresses rather than a walk of the chunk
-         * table, because this runs on the scan timer and the table can hold a
-         * million records: sixty-four addresses against thirty regions is a
-         * rounding error, and "where are the allocations going right now" does
-         * not need a census to answer. */
-        unsigned score = 0;
-        for (std::size_t i = 0; i < kRecentAddrs; ++i)
-            if (recent_[i] != 0 && r.contains(recent_[i])) ++score;
+    enrich_ptrs_.clear();
+    enrich_want_.clear();
+    enrich_approx_.clear();
 
-        if (r.start == bounds_.base && r.end == bounds_.end) current_score = score;
-        if (best == nullptr || score > best_score ||
-            (score == best_score && r.size() > best->size())) {
-            best = &r;
-            best_score = score;
-        }
+    /* One lap at most: without the bound an entirely refined table would spin
+     * the cursor over every slot looking for work that is not there. */
+    for (std::size_t seen = 0;
+         seen < n && enrich_ptrs_.size() < kEnrichPerPass; ++seen) {
+        const Chunk &c = slots[enrich_cursor_];
+        enrich_cursor_ = (enrich_cursor_ + 1) % n;
+
+        if (c.state != kChunkLive) continue;
+        if ((c.flags & kChunkFlagRefined) != 0) continue;
+        if (c.key == 0 || c.size == 0) continue;
+
+        enrich_ptrs_.push_back(c.key);
+        enrich_want_.push_back(c.size);
+        enrich_approx_.push_back(overhead_of(c.size, c.usable));
     }
 
-    /* Exactly one region is ever drawn, so everything else is hidden. Counted
-     * and reported, so the map never implies it is all of the heap. */
-    hidden_regions_ = count > 0 ? count - 1 : 0;
+    if (enrich_ptrs_.empty()) return false;
 
-    if (best == nullptr) return AddrRange{};
+    const ReadStatus st = reader_.read(enrich_ptrs_.data(), enrich_want_.data(),
+                                       enrich_ptrs_.size(), enrich_out_.data());
+    if (st == ReadStatus::Denied || st == ReadStatus::TargetGone) return true;
 
-    /* Hysteresis. Two arenas taking turns would otherwise re-bucket the whole
-     * address space twice a second, and a map that re-scales while being read
-     * is worse than one showing the second-busiest region. */
-    if (!bounds_.empty() && current_score * 2 >= best_score) return bounds_;
+    bool changed = false;
+    for (std::size_t i = 0; i < enrich_ptrs_.size(); ++i) {
+        const ChunkInfo &info = enrich_out_[i];
+        if (!info.valid) continue;
 
-    return AddrRange{best->start, best->end};
+        /* Marked before the fold rather than after, and marked even when the
+         * cell is out of view: a chunk in a region the map is not showing must
+         * not be re-read on every pass for the rest of the session. */
+        /* Recorded before the fold, and only folded if it was recorded: a
+         * correction the table cannot remember is one that can never be undone
+         * when the chunk is freed. */
+        if (!table_.mark_refined(enrich_ptrs_[i], info.overhead)) continue;
+        ++refined_;
+        exact_overhead_ += info.overhead;
+
+        if (map_.refine_overhead(enrich_ptrs_[i], enrich_approx_[i],
+                                 info.overhead))
+            changed = true;
+    }
+    return changed;
 }
 
 void HeapApp::refit(int w, int h) {
+    map_.set_regions(&regions_);
     grid_.set_bounds(bounds_.base, bounds_.end);
     if (!fit_grid(grid_, map_area(w, h))) return;
 
     /* A granularity change invalidates every aggregate, and rebuilding from the
      * chunk table is the only correct response. `configure` says whether that
      * actually happened, so a resize that changed nothing costs nothing. */
-    if (map_.configure(grid_)) map_.rebuild(table_);
+    if (map_.configure(grid_)) {
+        map_.rebuild(table_);
+        /* `rebuild` recomputes every cell from `overhead_of`, which undoes every
+         * exact figure the enrichment pass folded in. Records still marked
+         * refined would then never be corrected again, so the marks go with the
+         * corrections. */
+        table_.clear_refined();
+        refined_ = 0;
+        exact_overhead_ = 0;
+    }
     geometry_dirty_ = false;
 }
 
@@ -298,23 +348,27 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
     } else {
         char cell[32], span[32];
         format_byte_size(cell, sizeof cell, grid_.cell_bytes());
-        format_byte_size(span, sizeof span, bounds_.span());
-        /* The range shown is the range drawn, and the regions left out are
-         * named as left out. A header reporting the union while the map draws
-         * one region of it would be a number that is true of nothing on
-         * screen. */
+        format_byte_size(span, sizeof span, regions_.total_bytes());
+        /* Real addresses, from the first and last regions, with the packed
+         * total beside them. `bounds_` is a packed range and printing it as an
+         * address would be printing a coordinate that exists nowhere in the
+         * target. */
+        const std::uint64_t lo = regions_.spans().front().start;
+        const std::uint64_t hi = regions_.spans().back().end;
         std::snprintf(line, sizeof line,
-                      " Heap: 0x%012llx - 0x%012llx (%s)   Arena: %s   "
+                      " Heap: 0x%012llx - 0x%012llx (%s mapped)   Arena: %s   "
                       "1 cell = %s",
-                      static_cast<unsigned long long>(bounds_.base),
-                      static_cast<unsigned long long>(bounds_.end), span, arena,
-                      cell);
+                      static_cast<unsigned long long>(lo),
+                      static_cast<unsigned long long>(hi), span, arena, cell);
     }
     fb.text(0, 1, line, kInk, kPanel);
 
-    if (hidden_regions_ > 0) {
-        std::snprintf(line, sizeof line, " +%d region%s not shown ",
-                      hidden_regions_, hidden_regions_ == 1 ? "" : "s");
+    if (regions_.count() > 1) {
+        /* Named rather than silent: rows in the gutter restart at each region,
+         * and a reader has to know that a seam is a seam and not a gap in the
+         * heap. */
+        std::snprintf(line, sizeof line, " %zu regions packed ",
+                      regions_.count());
         const auto len = static_cast<int>(std::strlen(line));
         if (w > len) fb.text(w - len, 1, line, kWarn, kPanel);
     }
@@ -328,11 +382,31 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
                   static_cast<unsigned long long>(map_.total_live_chunks()));
     fb.text(0, 2, line, kInk, kPanel);
 
+    const std::uint64_t dropped = session_.dropped() - dropped_at_attach_;
+
+    /* Overhead, and how much of it is measured rather than inferred. The count
+     * matters: the figure is exact only for the chunks the enrichment pass has
+     * reached, and presenting a partly-corrected total as though it were the
+     * whole truth is the kind of quiet lie this tool exists not to tell. */
+    const char *why = reader_.hint();
+    if (why != nullptr) {
+        std::snprintf(line, sizeof line, " overhead: %s ", why);
+    } else if (refined_ != 0) {
+        std::snprintf(line, sizeof line, " overhead: %llu B exact over %llu chunks ",
+                      static_cast<unsigned long long>(exact_overhead_),
+                      static_cast<unsigned long long>(refined_));
+    } else {
+        line[0] = '\0';
+    }
+    if (line[0] != '\0') {
+        const auto len = static_cast<int>(std::strlen(line));
+        if (w > len && dropped == 0) fb.text(w - len, 2, line, kDim, kPanel);
+    }
+
     /* Dropped events are reported the moment they appear rather than folded
      * into a health percentage. Ground rule: a profiler that quietly lies about
      * what it missed is worse than no profiler, and after one overflow the
      * chunk table has a phantom leak in it that nothing can resync (D5). */
-    const std::uint64_t dropped = session_.dropped() - dropped_at_attach_;
     if (dropped != 0) {
         std::snprintf(line, sizeof line, " %llu events DROPPED - display is incomplete ",
                       static_cast<unsigned long long>(dropped));

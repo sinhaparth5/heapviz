@@ -131,10 +131,20 @@ promise about the ABI or the CLI surface.
   rather than the session ending underneath you.
 - Dropped events are called out on screen the moment any occur, because after
   an overflow the picture is missing allocations it cannot recover.
-- Programs that allocate from several threads are shown one arena at a time,
-  with a count of the regions not being displayed. glibc gives each allocating
-  thread its own arena, so this is most threaded programs; showing all of them
-  at once is tracked as ROADMAP M2.4.
+- Programs that allocate from several threads now show every arena at once.
+  glibc gives each allocating thread its own arena, scattered across the address
+  space with terabytes of nothing between them, so heapviz lays them end to end
+  and sizes cells by how much memory there actually is. A four-thread program
+  that previously drew one arena at 1 GiB per cell now draws all ten regions at
+  16 KiB per cell. Addresses down the left restart at each region, and the row
+  where one region ends and the next begins is highlighted.
+- Allocation overhead is now measured rather than inferred. heapviz reads the
+  target's real chunk headers and reports what the allocator actually spent,
+  which is always more than the usable size a program sees: a header word plus
+  alignment and size-class rounding, around 30 bytes per chunk for typical
+  glibc. Where reading the target is not permitted -- another user's process, or
+  `ptrace_scope` set to 1 -- heapviz says `ptrace denied: overhead unavailable`
+  and carries on with everything else rather than refusing to start.
 - heapviz can now read a target's memory map, which is what tells it where the
   heap actually is rather than inferring bounds from the addresses it happens
   to have seen. It distinguishes the main `[heap]` from thread arenas and from

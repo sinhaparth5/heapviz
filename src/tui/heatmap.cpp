@@ -18,9 +18,13 @@ void bump(std::uint32_t &slot, std::uint32_t value) noexcept {
     if (slot == kNoTime || value > slot) slot = value;
 }
 
+} // namespace
+
 std::uint32_t overhead_of(std::uint32_t size, std::uint32_t usable) noexcept {
     return usable > size ? usable - size : 0u;
 }
+
+namespace {
 
 /* A stamp from the future needs no guard of its own: the subtraction is
  * unsigned, so `now - stamp` wraps to something near 2^32, which fails the
@@ -81,8 +85,15 @@ void HeatMap::rebuild(const ChunkTable &table) {
         const Chunk &ch = slots[i];
         if (ch.state == kChunkEmpty) continue;
 
+        /* The same translation the incremental path uses. A rebuild that
+         * bucketed raw keys while `on_alloc` bucketed packed offsets would
+         * disagree with itself, and the disagreement would only appear after a
+         * resize -- which is the hardest possible time to notice it. */
+        std::uint64_t coord = 0;
+        if (!coordinate_of(ch.key, coord)) continue;
+
         std::size_t index = 0;
-        if (!grid_.index_of(ch.key, index)) continue;
+        if (!grid_.index_of(coord, index)) continue;
         CellAggregate &cell = cells_[index];
 
         /* Every record, live or freed, was allocated at some point, and the
@@ -103,9 +114,18 @@ void HeatMap::rebuild(const ChunkTable &table) {
     }
 }
 
+bool HeatMap::coordinate_of(std::uint64_t ptr,
+                            std::uint64_t &out) const noexcept {
+    if (regions_ == nullptr) { out = ptr; return true; }
+    return regions_->to_flat(ptr, out);
+}
+
 CellAggregate *HeatMap::cell_for(std::uint64_t ptr) noexcept {
+    std::uint64_t coord = 0;
+    if (!coordinate_of(ptr, coord)) return nullptr;
+
     std::size_t index = 0;
-    if (!grid_.index_of(ptr, index) || index >= cells_.size()) return nullptr;
+    if (!grid_.index_of(coord, index) || index >= cells_.size()) return nullptr;
     return &cells_[index];
 }
 
@@ -149,6 +169,21 @@ void HeatMap::on_free(std::uint64_t ptr, std::uint32_t size,
      * free happened in this cell either way and that is what the user is being
      * shown. */
     bump(cell->last_free_ms, now_ms);
+}
+
+bool HeatMap::refine_overhead(std::uint64_t ptr, std::uint32_t from,
+                              std::uint32_t to) noexcept {
+    CellAggregate *cell = cell_for(ptr);
+    if (cell == nullptr) return false;
+
+    /* Saturating, like every other decrement here. The chunk whose overhead is
+     * being corrected may have been folded into a cell that has since been
+     * rebuilt or re-bucketed, in which case the figure being removed was never
+     * added and an unguarded subtraction would wrap into billions. */
+    cell->overhead_bytes -= (cell->overhead_bytes >= from) ? from
+                                                           : cell->overhead_bytes;
+    cell->overhead_bytes += to;
+    return true;
 }
 
 CellState cell_state(const CellAggregate &a, const HeatTimings &t,

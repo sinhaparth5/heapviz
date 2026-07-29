@@ -41,6 +41,20 @@
 
 namespace hv {
 
+/* Per-record flags, in one of the three bytes that were already padding. M2.2's
+ * enrichment needs to know which records it has already corrected, and the
+ * alternative was widening Chunk past 32 bytes -- which would cost a second
+ * cache fetch on every probe that walks past a neighbour, forever, to serve a
+ * display detail. */
+enum ChunkFlags : std::uint8_t {
+    kChunkFlagNone = 0,
+    /* The exact chunk overhead has been read out of the target and folded into
+     * the heat map, so folding it again would double-count. Cleared wholesale
+     * by `HeatMap::rebuild`, which recomputes every cell from the approximate
+     * figure and thereby undoes the correction. */
+    kChunkFlagRefined = 1u << 0,
+};
+
 enum ChunkState : std::uint8_t {
     kChunkEmpty = 0, /* the slot has never held anything, or was shifted out */
     kChunkLive  = 1,
@@ -68,7 +82,16 @@ struct Chunk {
     std::uint32_t free_ms;  /* only meaningful when state is kChunkFreed  */
     std::uint32_t tid;
     std::uint8_t  state;
-    std::uint8_t  reserved[3];
+    std::uint8_t  flags;           /* kChunkFlag* above                       */
+    /* The exact overhead M2.2 read out of the target, kept so the correction
+     * can be *undone* when the chunk is freed. Without it the cell keeps the
+     * exact figure while `on_free` removes the approximate one, and the
+     * difference accumulates in the cell on every free.
+     *
+     * 16 bits because that is what was left of the padding; a chunk whose
+     * overhead exceeds 64 KiB is simply left approximate, which is honest and
+     * vanishingly rare. */
+    std::uint16_t overhead_exact;
 };
 
 struct ChunkTableStats {
@@ -124,6 +147,16 @@ public:
 
     /* Removes a record outright, closing the gap by backward shift. */
     bool erase(std::uint64_t key) noexcept;
+
+    /* Records the exact overhead for a key and marks it refined. False when the
+     * key is unknown, or when the figure does not fit -- in which case the
+     * record keeps its approximation rather than a truncated lie. */
+    bool mark_refined(std::uint64_t key, std::uint32_t exact_overhead) noexcept;
+
+    /* Clears every refinement mark. Called after a rebuild, which recomputes
+     * overhead from the approximate figure and so undoes the corrections: a
+     * record still marked refined would never be corrected again. */
+    void clear_refined() noexcept;
 
     const ChunkTableStats &stats() const noexcept { return stats_; }
 

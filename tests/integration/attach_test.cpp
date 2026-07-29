@@ -157,12 +157,12 @@ void test_the_map_sees_the_heap() {
     /* One worker and a steady rate, so the traffic concentrates in a single
      * arena and the displayed region is unambiguous.
      *
-     * Note that it is *not* the main arena, which is the thing this test was
-     * written after discovering: churn does its work on a spawned thread even
-     * at --threads 1, and glibc gives every allocating thread its own arena.
-     * A version of `choose_view` that preferred `[heap]` displayed a region
-     * holding two chunks out of five hundred, and every assertion above this
-     * one still passed. */
+     * Note that the traffic is *not* in the main arena, which is the thing this
+     * test was written after discovering: churn does its work on a spawned
+     * thread even at --threads 1, and glibc gives every allocating thread its
+     * own arena. A version that displayed `[heap]` showed a region holding two
+     * chunks out of five hundred, and every assertion above this one still
+     * passed. M2.4 packs them all, so the arena no longer has to be chosen. */
     const int pid = launch_churn({"--threads", "1", "--seconds", "2",
                                   "--mode", "steady"});
     if (pid <= 0) { check(false, "map: churn launched"); return; }
@@ -204,6 +204,181 @@ void test_the_map_sees_the_heap() {
                 on_map * 100.0,
                 static_cast<unsigned long long>(app.map().total_live_bytes()),
                 app.hidden_regions());
+
+    session.detach();
+    wait_for(pid);
+}
+
+/* The case M2.4 exists for. Four worker threads means glibc hands out four
+ * arenas plus the main one, scattered across the address space with terabytes
+ * between them. Two earlier designs both failed here and both looked fine:
+ * spanning the union clamped the grid to 1 GiB cells and drew one occupied cell
+ * in a screenful of hole, and picking a single region drew whichever arena won,
+ * silently omitting the other three. */
+void test_a_threaded_target_shows_every_arena() {
+    const int pid = launch_churn({"--threads", "4", "--seconds", "2",
+                                  "--mode", "steady"});
+    if (pid <= 0) { check(false, "threads: churn launched"); return; }
+
+    hv::RingSession session;
+    if (session.attach(pid) != hv::AttachStatus::Ok) {
+        check(false, "threads: attached");
+        return;
+    }
+
+    const int devnull = ::open("/dev/null", O_RDONLY);
+    hv::EventLoop loop(loop_config(devnull, 90)); /* sampled mid-run */
+    hv::HeapApp   app(session, hv::Capabilities{});
+    loop.run(app);
+    ::close(devnull);
+
+    check(app.live_chunks() > 64, "threads: the target is holding allocations");
+    check(app.region_map().count() > 1,
+          "threads: more than one region is being displayed");
+    check(app.hidden_regions() == 0, "threads: and none are hidden");
+
+    /* The packed space is the memory, not the distance between the lowest and
+     * highest address. If it were the union this would be terabytes. */
+    check(app.region_map().total_bytes() < (std::uint64_t{1} << 32),
+          "threads: the packed space is memory-sized, not address-sized");
+
+    /* Cell size follows the packed total, so it stays fine-grained rather than
+     * clamping to the 1 GiB maximum the union forced. */
+    check(app.map().grid().cell_bytes() < (std::uint64_t{1} << 20),
+          "threads: so the grid keeps a useful granularity");
+    check(app.map().grid().covers_whole_span(),
+          "threads: and covers all of it rather than a fraction");
+
+    const double on_map = static_cast<double>(app.map().total_live_chunks()) /
+                          static_cast<double>(app.live_chunks());
+    check(on_map > 0.5, "threads: most of the live set is on the map");
+
+    std::printf("  threads: %zu regions packed into %llu KiB, 1 cell = %llu B, "
+                "%llu of %llu live chunks on the map (%.0f%%)\n",
+                app.region_map().count(),
+                static_cast<unsigned long long>(app.region_map().total_bytes() / 1024),
+                static_cast<unsigned long long>(app.map().grid().cell_bytes()),
+                static_cast<unsigned long long>(app.map().total_live_chunks()),
+                static_cast<unsigned long long>(app.live_chunks()), on_map * 100.0);
+
+    session.detach();
+    wait_for(pid);
+}
+
+/* M2.2's enrichment: exact chunk overhead read out of the target, replacing the
+ * interceptor's `usable - size`. The interesting property is not that a number
+ * appears but that it is *bigger* than the approximation, because `usable`
+ * cannot see the chunk header and so always understates what a program costs. */
+void test_overhead_is_corrected_from_real_headers() {
+    const int pid = launch_churn({"--threads", "2", "--seconds", "3",
+                                  "--mode", "steady"});
+    if (pid <= 0) { check(false, "overhead: churn launched"); return; }
+
+    hv::RingSession session;
+    if (session.attach(pid) != hv::AttachStatus::Ok) {
+        check(false, "overhead: attached");
+        return;
+    }
+
+    const int devnull = ::open("/dev/null", O_RDONLY);
+    hv::EventLoop loop(loop_config(devnull, 150)); /* several enrichment passes */
+    hv::HeapApp   app(session, hv::Capabilities{});
+    loop.run(app);
+    ::close(devnull);
+
+    if (!app.reader().available()) {
+        /* ptrace refused. That is a supported mode, not a failure -- but then
+         * nothing below is meaningful, and the hint has to say why. */
+        check(app.reader().hint() != nullptr,
+              "overhead: unavailable, and says so");
+        std::printf("  overhead: %s, skipped\n", app.reader().hint());
+        session.detach();
+        wait_for(pid);
+        return;
+    }
+
+    check(app.refined_chunks() > 0, "overhead: chunks were corrected");
+    check(app.exact_overhead() > 0, "overhead: with real bytes behind them");
+    check(app.reader().reads() > 0, "overhead: by actually reading the target");
+
+    /* Batched, not one syscall per chunk: the whole reason the reader takes a
+     * vector. Hundreds of chunks must not cost hundreds of syscalls. */
+    check(app.reader().reads() < app.refined_chunks(),
+          "overhead: fewer syscalls than chunks");
+
+    /* The correction is upward. glibc spends at least one word of header on
+     * every chunk plus alignment rounding, none of which `usable` reports, so
+     * an exact figure that came out lower than the approximation would mean the
+     * decode had latched onto the wrong header. */
+    const double per_chunk = static_cast<double>(app.exact_overhead()) /
+                             static_cast<double>(app.refined_chunks());
+    check(per_chunk >= 8.0, "overhead: at least a header word per chunk");
+    check(per_chunk < 64.0, "overhead: and a plausible amount, not a misread");
+
+    /* What the cells actually hold, which is the thing the display draws and
+     * the thing neither of the counters above can vouch for. A correction
+     * applied twice inflates a cell's overhead without changing the ratio of
+     * the totals, so this is the only assertion that notices: overhead per live
+     * chunk on the map has a physical ceiling, and repeated folding blows
+     * straight through it. */
+    std::uint64_t map_overhead = 0;
+    for (std::size_t i = 0; i < app.map().cell_count(); ++i)
+        map_overhead += app.map().at(i).overhead_bytes;
+
+    const std::uint64_t on_map = app.map().total_live_chunks();
+    check(on_map > 0, "overhead: the map has live chunks to carry it");
+    if (on_map > 0) {
+        const double map_per_chunk = static_cast<double>(map_overhead) /
+                                     static_cast<double>(on_map);
+        /* The ceiling is the assertion that matters. A cell holds a sum it
+         * cannot attribute to any one pointer, so a correction applied twice --
+         * or applied on alloc and never reversed on free -- accumulates there
+         * without changing any of the counters above. 64 bytes per chunk is
+         * already generous for glibc; the residue bug this caught was sitting
+         * at 75 and climbing.
+         *
+         * There is deliberately no floor. Not every on-map chunk has been
+         * reached by the round-robin yet, and an unrefined one carries only
+         * `usable - size`, which for a request that happens to fit its size
+         * class exactly is zero. An earlier version of this asserted at least a
+         * header word per chunk and was simply wrong about that. */
+        check(map_per_chunk < 64.0,
+              "overhead: per-chunk overhead on the map is physically possible");
+        check(map_overhead > 0, "overhead: and the map carries some");
+    }
+
+    /* Corrected records must carry their mark. Without it the round-robin folds
+     * the same chunk in again on its next lap and the cell's overhead climbs
+     * forever -- but a lap over a 65536-slot table at 512 a pass takes half a
+     * minute, far longer than this test runs, so the *consequence* is out of
+     * reach here and the mechanism is what gets asserted. */
+    std::size_t marked = 0;
+    for (std::size_t i = 0; i < app.table().slot_count(); ++i) {
+        const hv::Chunk &c = app.table().slots()[i];
+        if (c.state == hv::kChunkLive && (c.flags & hv::kChunkFlagRefined) != 0)
+            ++marked;
+    }
+    check(marked > 0, "overhead: corrected records are marked, so a later lap "
+                      "cannot fold them in twice");
+
+    /* The enrichment has to keep up with the live set, not merely run. A
+     * rebuild undoes every correction, so if its refinement marks were not
+     * cleared with it the pass would consider the whole table done and the
+     * count would stall near zero for the rest of the session. */
+    check(app.refined_chunks() * 4 > app.live_chunks(),
+          "overhead: corrections keep pace with the live set");
+
+    std::printf("  overhead: %llu chunks corrected in %llu syscall(s), "
+                "%llu bytes exact (%.1f B/chunk), %llu headers rejected\n",
+                static_cast<unsigned long long>(app.refined_chunks()),
+                static_cast<unsigned long long>(app.reader().reads()),
+                static_cast<unsigned long long>(app.exact_overhead()), per_chunk,
+                static_cast<unsigned long long>(app.reader().rejected()));
+    std::printf("  overhead: map carries %llu B over %llu on-map chunks, "
+                "%llu live\n",
+                static_cast<unsigned long long>(map_overhead),
+                static_cast<unsigned long long>(on_map),
+                static_cast<unsigned long long>(app.live_chunks()));
 
     session.detach();
     wait_for(pid);
@@ -303,6 +478,8 @@ int main(int argc, char **argv) {
     test_attaching_to_nothing();
     test_launch_attach_and_watch();
     test_the_map_sees_the_heap();
+    test_a_threaded_target_shows_every_arena();
+    test_overhead_is_corrected_from_real_headers();
     test_a_second_consumer_is_refused();
 
     if (g_failures != 0) {
