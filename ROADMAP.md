@@ -428,9 +428,13 @@ between them and hold perhaps 40 MiB: the grid clamps to 1 GiB cells,
 `Grid::covers_whole_span` goes false, and the display becomes one occupied cell
 in a screenful of hole. That was measured, not predicted.
 
-- [ ] Compact the allocatable regions into one contiguous coordinate space, so
+- [~] Compact the allocatable regions into one contiguous coordinate space, so
       the grid buckets total heap bytes rather than the distance between the
-      lowest and highest address.
+      lowest and highest address. `RegionMap` in `src/tui/region_map.cpp` does
+      the packing and the two conversions, with `region_map_test` holding the
+      bijection across whole regions rather than at samples. Not yet wired into
+      the display: `HeatMap` and `MapView` still take real addresses, so the
+      box stays open until they take packed ones.
 - [ ] Gutter labels become per-region: a row's label is the real address in
       whichever region that row falls in, and region boundaries are marked.
       Without this the gutter is a plausible-looking lie, which M3.1 already

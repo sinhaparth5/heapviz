@@ -82,6 +82,13 @@ target_link_libraries(proc_maps_test PRIVATE heapviz_core)
 add_test(NAME proc_maps COMMAND proc_maps_test)
 set_tests_properties(proc_maps PROPERTIES TIMEOUT 60)
 
+# --- Packing scattered regions into one display space (M2.4) ---------------
+add_executable(region_map_test unit/region_map_test.cpp)
+heapviz_test_target(region_map_test)
+target_link_libraries(region_map_test PRIVATE heapviz_core)
+add_test(NAME region_map COMMAND region_map_test)
+set_tests_properties(region_map PROPERTIES TIMEOUT 60)
+
 # --- Address space bucketizer (M3.1) ---------------------------------------
 add_executable(grid_test unit/grid_test.cpp)
 heapviz_test_target(grid_test)

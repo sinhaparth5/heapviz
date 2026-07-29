@@ -72,6 +72,7 @@ add_library(heapviz_core STATIC
   src/tui/capabilities.cpp
   src/tui/chunk_table.cpp
   src/tui/proc_maps.cpp
+  src/tui/region_map.cpp
   src/tui/session.cpp
   src/tui/heap_app.cpp
   src/tui/grid.cpp
