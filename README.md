@@ -189,7 +189,7 @@ renderer that puts one write on the wire per frame, and a paced event loop that
 handles resizing and idles at close to no CPU. `heapviz --term-check` will show
 you all of it. There is no heap visualisation yet — that is the next milestone.
 
-[**ROADMAP.md**](ROADMAP.md) tracks 209 tasks across 8 milestones, from the
+[**ROADMAP.md**](ROADMAP.md) tracks 212 tasks across 8 milestones, from the
 shared-memory ABI through the interceptor, sparse grid, ANSI engine,
 interactivity, and visual polish. [**CHANGELOG.md**](CHANGELOG.md) records what
 has actually shipped.

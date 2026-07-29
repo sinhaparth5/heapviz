@@ -251,7 +251,16 @@ MapsScanner::MapsScanner(int pid) : pid_(pid) {
 }
 
 ScanStatus MapsScanner::scan(std::uint32_t now_ms) {
-    const ScanStatus st = read_all(path_.c_str(), text_);
+    ScanStatus st = read_all(path_.c_str(), text_);
+
+    /* A process that has exited but not yet been reaped still has a /proc entry,
+     * and its maps file opens and reads cleanly as zero bytes. Parsed at face
+     * value that is a successful scan of a process with no memory, which clears
+     * the region list -- so the display of a target that just died would go
+     * blank a fraction of a second after it died, which is precisely the frame
+     * worth keeping. A live process always has mappings, so empty means gone. */
+    if (st == ScanStatus::Ok && text_.empty()) st = ScanStatus::TargetGone;
+
     if (st != ScanStatus::Ok) {
         status_ = st;
         /* The timer is still reset. A dead target that is polled every 500 ms

@@ -406,6 +406,21 @@ void test_a_dead_target_is_reported_as_gone() {
     check(t.scan(1) == hv::ScanStatus::TargetGone, "gone: the target dies");
     check(t.regions().size() == 11, "gone: its last map is kept");
     check(!t.bounds().empty(), "gone: and so are its bounds");
+
+    /* The same thing by the other route. A target that has exited but has not
+     * been reaped is a zombie, and a zombie's maps file opens and reads as zero
+     * bytes rather than failing -- so the read succeeding is not enough to
+     * conclude the process is alive. Taken at face value this wiped the map of
+     * a target the instant it died, which is the frame most worth keeping. */
+    hv::MapsScanner z(0x7FFFFFFF);
+    z.scan_text(kSampleMap, 0);
+    check(z.scan_text("", 1) == hv::ScanStatus::Ok,
+          "zombie: an explicitly empty parse is still a parse");
+    check(z.regions().empty(), "zombie: which does clear the regions");
+    /* ...but the file-reading path must not reach that conclusion. */
+    check(hv::scan_status_str(hv::ScanStatus::TargetGone) ==
+              std::string("target exited"),
+          "zombie: and reports the target as exited");
 }
 
 /* --- the label ------------------------------------------------------------ */

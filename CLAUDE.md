@@ -13,7 +13,7 @@ compiled separately and talk over POSIX shared memory:
 - `heapviz`, a C++20 TUI that maps the same segment, drains the ring, and draws
   the heap.
 
-`ROADMAP.md` is the executable plan and the only design document left: 209
+`ROADMAP.md` is the executable plan and the only design document left: 212
 checkboxes across M0 to M7, with a progress table at the top that must be kept
 accurate. Read its "Ground rules" section before touching the interceptor or the
 render path; those six invariants are what make the design work, and violating
@@ -70,11 +70,14 @@ cannot exit and unlink its segment before anyone attaches).
 
 ### What the `heapviz` binary can actually do today
 
-Attach (`--pid`, `-- <cmd>`) is M2.3 and unimplemented; those arguments exit 2.
-Four commands work — `--version` (`-V`), `--help` (`-h`), `--term-check`, and
-`--cleanup` — plus two modifiers, `--debug-timing` and `--no-unicode`:
+Attach landed in M2.3, so `--pid <n>` and `-- <cmd>` both work and the binary
+shows a real heap. Six commands: `--version` (`-V`), `--help` (`-h`),
+`--term-check`, `--cleanup`, `--pid`, and `--`, plus two modifiers,
+`--debug-timing` and `--no-unicode`:
 
 ```bash
+./build/debug/heapviz -- ./build/debug/churn --threads 1 --seconds 5
+./build/debug/heapviz --pid $(pgrep -n churn)        # one consumer per target
 ./build/debug/heapviz --version                      # pinned by the tui_version test
 ./build/debug/heapviz --term-check                   # drive M3 and M4 against a real terminal
 ./build/debug/heapviz --term-check --debug-timing    # per-phase frame budget overlay
@@ -84,7 +87,8 @@ COLORTERM= TERM=linux ./build/debug/heapviz --term-check   # 16-colour fallback
 ```
 
 Only `argv[1]` selects the command, while the modifiers are scanned across the
-whole argv so either order works. Anything else in `argv[1]` prints "not
+whole argv so either order works — except that the scan stops at `--`, since
+everything after it belongs to the target. Anything else in `argv[1]` prints "not
 implemented yet" and exits 2, which is what makes the unimplemented flags
 distinguishable from the working ones.
 
@@ -111,7 +115,13 @@ budget, and the per-cell colour interpolation alone spends most of the frame's
 1 ms. Both binaries still build everywhere, so they can be run by hand in debug
 to read the numbers.
 
-Expected test counts when everything passes: debug 23, release 25, asan 21.
+Expected test counts when everything passes: debug 24, release 26, asan 21.
+
+`attach` is preload-driven, so it is skipped under ASan with the rest of them.
+It launches three `churn` processes over its run, each of which creates a 32 MiB
+segment; combined with `ring_mpsc` and the two benchmarks, a full `ctest` run
+saturates every core for a couple of minutes. Cap the parallelism
+(`cmake --build --preset release -- -j 4`) on a machine you are also using.
 
 ## Architecture
 

@@ -216,6 +216,11 @@ set_tests_properties(shm_cleanup PROPERTIES TIMEOUT 60)
 add_executable(intercept_test integration/intercept_test.cpp)
 heapviz_test_target(intercept_test)
 
+# --- Attach lifecycle: launch, attach, drain into the map, detach (M2.3) ---
+add_executable(attach_test integration/attach_test.cpp)
+heapviz_test_target(attach_test)
+target_link_libraries(attach_test PRIVATE heapviz_core)
+
 # --- Transitive coverage: strdup/asprintf/getline/operator new -------------
 add_executable(transitive_target fixtures/transitive_target.cpp)
 target_compile_options(transitive_target PRIVATE ${HEAPVIZ_WARNINGS})
@@ -239,6 +244,10 @@ if(NOT HEAPVIZ_ASAN)
   add_test(NAME transitive
     COMMAND transitive_test $<TARGET_FILE:heapviz_preload> $<TARGET_FILE:transitive_target>)
   set_tests_properties(transitive PROPERTIES TIMEOUT 120)
+
+  add_test(NAME attach
+    COMMAND attach_test $<TARGET_FILE:heapviz_preload> $<TARGET_FILE:churn>)
+  set_tests_properties(attach PROPERTIES TIMEOUT 180)
 
   # Only meaningful on an optimised build. At -O0 the interceptor costs 45-56 ns
   # and straddles the budget, which made this test flaky in debug for no useful

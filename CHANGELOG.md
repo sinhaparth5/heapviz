@@ -121,6 +121,20 @@ promise about the ABI or the CLI surface.
   through the real map, which is the only way to see M3 until attaching lands.
 - README notes `reset` / `stty sane` for the one case nothing can guard
   against, `kill -9`.
+- **heapviz can now watch a real program.** `heapviz -- ./your_app args...`
+  launches it with the interceptor injected, and `heapviz --pid 1234` attaches
+  to one that is already running under `libheapviz.so`. The heap map fills in
+  from live allocations, the header names the process and the address range
+  being shown, and `q` detaches and leaves the target running untouched. Only
+  one heapviz can watch a target at a time; a second is told which one has it.
+  When the target exits, its last state stays on screen and stays readable
+  rather than the session ending underneath you.
+- Dropped events are called out on screen the moment any occur, because after
+  an overflow the picture is missing allocations it cannot recover.
+- Programs that allocate from several threads are shown one arena at a time,
+  with a count of the regions not being displayed. glibc gives each allocating
+  thread its own arena, so this is most threaded programs; showing all of them
+  at once is tracked as ROADMAP M2.4.
 - heapviz can now read a target's memory map, which is what tells it where the
   heap actually is rather than inferring bounds from the addresses it happens
   to have seen. It distinguishes the main `[heap]` from thread arenas and from

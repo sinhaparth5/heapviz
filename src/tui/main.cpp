@@ -3,11 +3,13 @@
  * Copyright (C) 2026 Parth Sinha
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
- * Attach/lifecycle is M2.3, so this binary cannot yet show a heap. What it can
- * do is drive the terminal layer end to end: raw mode and the alternate screen
- * (M4.1), a clipped double-buffered cell grid (M4.2), a differential ANSI
- * streamer that puts one write(2) on the wire per frame (M4.3), and a
- * frame-paced event loop that idles at roughly no CPU (M4.5).
+ * Argument handling and the two ways in: `--pid` attaches to a process already
+ * running the interceptor, `-- <cmd>` launches one with it injected. Both end
+ * up in `attach_and_run`, which is the whole session: claim the ring, drive the
+ * event loop over a `HeapApp`, and give the terminal back on the way out.
+ *
+ * `--term-check` remains the hand-check for the terminal layer (M4.1 to M4.5)
+ * and is the only thing left here that draws its own frames.
  */
 
 #include "common/heapviz_abi.h"
@@ -15,14 +17,18 @@
 #include "tui/demo_heap.h"
 #include "tui/event_loop.h"
 #include "tui/framebuffer.h"
+#include "tui/heap_app.h"
 #include "tui/heat_color.h"
 #include "tui/map_view.h"
 #include "tui/renderer.h"
+#include "tui/session.h"
 #include "tui/shm_cleanup.h"
 #include "tui/terminal.h"
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -61,8 +67,9 @@ void print_usage() {
         "Colour depth is detected from COLORTERM and TERM. To see a fallback,\n"
         "run e.g. `COLORTERM= TERM=linux heapviz --term-check`.\n"
         "\n"
-        "Not yet implemented: attaching to a target is ROADMAP.md M2.3, and the\n"
-        "heap map itself is M3.\n");
+        "A program that allocates from several threads has its memory spread\n"
+        "across several arenas; heapviz shows one at a time and says how many\n"
+        "it is not showing (ROADMAP.md M2.4).\n");
 }
 
 /* SIGKILL skips the interceptor's destructor, so a killed target leaves its ring
@@ -339,15 +346,109 @@ int term_check(bool timing, bool force_ascii) {
     return why == hv::LoopExit::Quit || why == hv::LoopExit::FrameLimit ? 0 : 1;
 }
 
+/* Runs an attached session to completion. Everything before the TerminalGuard
+ * reports to the user's scrollback, because anything printed after it is torn
+ * down with the alternate screen the moment the loop exits. */
+int attach_and_run(int pid, bool launched, bool force_ascii) {
+    hv::RingSession session;
+    const hv::AttachStatus st = session.attach(pid);
+    if (st != hv::AttachStatus::Ok) {
+        std::fprintf(stderr, "heapviz: %s (pid %d)\n",
+                     hv::attach_status_str(st), pid);
+        if (st == hv::AttachStatus::NoSegment && !launched)
+            std::fprintf(stderr,
+                         "heapviz: start it with `heapviz -- <cmd>`, or "
+                         "LD_PRELOAD libheapviz.so into it yourself\n");
+        if (st == hv::AttachStatus::AlreadyWatched)
+            std::fprintf(stderr, "heapviz: the other one is pid %u\n",
+                         session.other_consumer());
+        if (st == hv::AttachStatus::AbiMismatch)
+            std::fprintf(stderr,
+                         "heapviz: target speaks ABI v%u, this build speaks "
+                         "v%u; rebuild both halves\n",
+                         session.target_abi(), HEAPVIZ_ABI_VERSION);
+        return 1;
+    }
+
+    const hv::Capabilities caps = hv::detect_capabilities_from_env(force_ascii);
+
+    int w = 0, h = 0;
+    if (hv::terminal_size(STDOUT_FILENO, w, h) && !hv::size_is_usable(w, h)) {
+        hv::report_too_small(STDERR_FILENO, w, h);
+        return 1;
+    }
+
+    hv::TerminalGuard guard;
+    const hv::TermStatus ts = guard.enter(STDOUT_FILENO);
+    if (ts != hv::TermStatus::Ok) {
+        std::fprintf(stderr, "heapviz: %s\n", hv::term_status_str(ts));
+        return 1;
+    }
+
+    hv::LoopConfig cfg;
+    cfg.in_fd  = STDIN_FILENO;
+    cfg.out_fd = STDOUT_FILENO;
+    cfg.color  = caps.color;
+
+    hv::EventLoop loop(cfg);
+    hv::HeapApp   app(session, caps);
+    const hv::LoopExit why = loop.run(app);
+
+    guard.restore();
+
+    /* Detached explicitly rather than left to the destructor: releasing the
+     * claim is what lets the next heapviz attach, and a target that outlives
+     * this one must not be left permanently unwatchable. */
+    session.detach();
+
+    const hv::LoopStats &s = loop.stats();
+    std::printf("heapviz: %s after %llu events from pid %d (%llu frames, "
+                "%llu drawn)\n",
+                app.state() == hv::SessionState::Exited ? "target exited"
+                                                        : hv::loop_exit_str(why),
+                static_cast<unsigned long long>(app.events_seen()), pid,
+                static_cast<unsigned long long>(s.frames),
+                static_cast<unsigned long long>(s.drawn));
+    return why == hv::LoopExit::Quit || why == hv::LoopExit::FrameLimit ? 0 : 1;
+}
+
+int launch_and_run(char **cmd, bool force_ascii) {
+    const std::string preload = hv::find_preload();
+    if (preload.empty()) {
+        std::fprintf(stderr,
+                     "heapviz: cannot find libheapviz.so next to this binary; "
+                     "set HEAPVIZ_PRELOAD to its path\n");
+        return 1;
+    }
+
+    /* The target blocks in its constructor until we claim the ring, so a
+     * program that allocates and exits cannot finish -- and unlink its segment
+     * -- before we have finished starting up. */
+    const hv::Launch l = hv::launch_target(cmd, preload, hv::kAttachTimeoutMs);
+    if (l.status != hv::LaunchStatus::Ok) {
+        std::fprintf(stderr, "heapviz: %s: %s: %s\n",
+                     hv::launch_status_str(l.status), cmd[0],
+                     std::strerror(l.err));
+        return 1;
+    }
+
+    return attach_and_run(l.pid, true, force_ascii);
+}
+
 } // namespace
 
 int main(int argc, char **argv) {
     /* Order-independent, because `--term-check --no-unicode` and
-     * `--no-unicode --term-check` are both things a person will type. */
+     * `--no-unicode --term-check` are both things a person will type.
+     *
+     * The scan stops at `--`, after which the arguments belong to the target:
+     * `heapviz -- ./app --no-unicode` is asking the app for ASCII, not heapviz,
+     * and a scan that read the whole of argv would quietly answer for both. */
     bool timing      = false;
     bool force_ascii = false;
     for (int i = 1; i < argc; ++i) {
         const std::string_view a{argv[i]};
+        if (a == "--") break;
         if (a == "--debug-timing") timing = true;
         if (a == "--no-unicode")   force_ascii = true;
     }
@@ -360,6 +461,25 @@ int main(int argc, char **argv) {
             return term_check(timing, force_ascii);
         }
         if (arg == "--cleanup")                { return cleanup(); }
+        if (arg == "--pid") {
+            if (argc < 3) {
+                std::fprintf(stderr, "heapviz: --pid needs a process id\n");
+                return 2;
+            }
+            const int pid = std::atoi(argv[2]);
+            if (pid <= 0) {
+                std::fprintf(stderr, "heapviz: not a process id: %s\n", argv[2]);
+                return 2;
+            }
+            return attach_and_run(pid, false, force_ascii);
+        }
+        if (arg == "--") {
+            if (argc < 3) {
+                std::fprintf(stderr, "heapviz: -- needs a command to run\n");
+                return 2;
+            }
+            return launch_and_run(argv + 2, force_ascii);
+        }
         if (arg == "--no-unicode") {
             /* A modifier on its own is not a command. */
             print_usage();

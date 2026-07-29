@@ -14,14 +14,14 @@ concrete enough that "done" is not a judgement call.
 |---|-----------|-------|--------|------|
 | M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
-| M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[~]` | 6 / 17 |
+| M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[~]` | 11 / 20 |
 | M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[x]` | 34 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 121 / 209**
+**Total: 126 / 212**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -388,18 +388,55 @@ for inspecting chunks the interceptor never saw.
 
 ### M2.3 Attach lifecycle
 
-- [ ] `heapviz --pid <pid>`: attach to a running process with the preload
-      already active.
-- [ ] `heapviz -- <cmd> <args...>`: fork/exec the target with `LD_PRELOAD`
-      injected. Most users will want this path.
-- [ ] Wait-for-ready: poll for the shm magic with a timeout and a clear error
-      ("target is not running libheapviz.so").
-- [ ] Detach cleanly on `q`: unmap, leave the target running and unharmed.
-- [ ] Handle target death while attached: freeze the last frame, banner the
-      status, keep the UI interactive so the user can still inspect.
+- [x] `heapviz --pid <pid>`: attach to a running process with the preload
+      already active. `RingSession::attach` in `src/tui/session.cpp`.
+- [x] `heapviz -- <cmd> <args...>`: fork/exec the target with `LD_PRELOAD`
+      injected. Most users will want this path. `LD_PRELOAD` is appended to
+      whatever the user already had, and the exec's success is reported back
+      over a close-on-exec pipe -- without which a missing command looks
+      exactly like a target that is not running the interceptor.
+- [x] Wait-for-ready: poll for the shm magic with a timeout and a clear error
+      ("target is not running libheapviz.so"). A pid that does not exist is
+      answered immediately rather than waited out.
+- [x] Detach cleanly on `q`: unmap, leave the target running and unharmed.
+      Explicit rather than left to the destructor: releasing the claim is what
+      lets the next heapviz attach at all.
+- [x] Handle target death while attached: freeze the last frame, banner the
+      status, keep the UI interactive so the user can still inspect. Death is
+      detected two ways, because `producer_exited` is set by a destructor that
+      `SIGKILL` skips. Note that a zombie's `/proc/<pid>/maps` reads as *empty*
+      rather than failing, which silently cleared the frozen map until M2.1's
+      scanner learned to treat an empty read as death.
 
 **Definition of done:** `heapviz -- ./examples/churn` launches, attaches, shows
-live bounds, and survives the target exiting.
+live bounds, and survives the target exiting. Covered end to end by
+`tests/integration/attach_test.cpp`, which drives the real `EventLoop` through
+its test seams rather than a pty, and asserts on the model rather than on the
+framebuffer.
+
+### M2.4 Displaying more than one region
+
+M2.3 shipped with the map pointed at a single region, chosen by which one the
+recent allocations landed in. That is a real limitation rather than a detail:
+glibc gives every allocating thread its own arena, so a threaded target has its
+memory spread across several, and heapviz currently draws one of them and
+reports "+N regions not shown".
+
+The union is not the answer, and this is worth stating because it is the obvious
+thing to try. A brk heap at `0x5b...` and a thread arena at `0x70...` span 23 TiB
+between them and hold perhaps 40 MiB: the grid clamps to 1 GiB cells,
+`Grid::covers_whole_span` goes false, and the display becomes one occupied cell
+in a screenful of hole. That was measured, not predicted.
+
+- [ ] Compact the allocatable regions into one contiguous coordinate space, so
+      the grid buckets total heap bytes rather than the distance between the
+      lowest and highest address.
+- [ ] Gutter labels become per-region: a row's label is the real address in
+      whichever region that row falls in, and region boundaries are marked.
+      Without this the gutter is a plausible-looking lie, which M3.1 already
+      calls the worst failure the map can have.
+- [ ] Decide what a granularity change means when regions come and go, since
+      every arena appearing would otherwise re-bucket the whole display.
 
 ---
 
