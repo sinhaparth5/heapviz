@@ -42,6 +42,7 @@
 #include "tui/heatmap.h"
 #include "tui/inspector.h"
 #include "tui/map_view.h"
+#include "tui/metrics.h"
 #include "tui/proc_maps.h"
 #include "tui/region_map.h"
 #include "tui/session.h"
@@ -109,6 +110,7 @@ public:
     const ChunkReader &reader() const noexcept { return reader_; }
     const MapCursor   &cursor() const noexcept { return cursor_; }
     const ChunkInspector &inspector() const noexcept { return inspect_; }
+    const Metrics     &metrics() const noexcept { return metrics_; }
     const Grid        &grid()   const noexcept { return grid_; }
     std::uint64_t refined_chunks() const noexcept { return refined_; }
     std::uint64_t exact_overhead() const noexcept { return exact_overhead_; }
@@ -128,11 +130,18 @@ private:
     void refit(int w, int h);
     Rect map_area(int w, int h) const noexcept;
 
-    /* Where M5.2's panel goes, or a zero-height rect when the terminal is too
-     * short to give it rows without leaving the map unreadable. Both this and
-     * `map_area` are derived from the same three constants so that they cannot
-     * overlap -- M6.2 replaces the pair with a solved layout. */
+    /* Where the two bottom panels go, or zero-area rects when the terminal
+     * cannot give them the room. All three of these and `map_area` are derived
+     * from the same constants so that they cannot overlap -- M6.2 replaces the
+     * set with a solved layout that survives sizes these do not.
+     *
+     * `metrics_cols` is where the split is applied and `metrics_split` is where
+     * it is decided -- the reasoning is in `metrics.h`, and it is a free
+     * function so that a test can ask it about a width without standing up a
+     * session to do it. */
+    int  metrics_cols(int w) const noexcept;
     Rect inspector_area(int w, int h) const noexcept;
+    Rect metrics_area(int w, int h) const noexcept;
     bool inspector_fits(int h) const noexcept;
 
     RingSession &session_;
@@ -146,6 +155,7 @@ private:
     ChunkReader  reader_;
     MapCursor    cursor_;
     ChunkInspector inspect_;
+    Metrics        metrics_;
 
     std::vector<HvEvent> batch_;
 

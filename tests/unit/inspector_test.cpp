@@ -432,7 +432,7 @@ void test_the_empty_panel_reads_as_intentional() {
 
     check(out.find("UNALLOCATED") != std::string::npos,
           "empty panel: the status says what it is");
-    check(out.find("no allocation in this cell") != std::string::npos,
+    check(out.find("address space the target has not used") != std::string::npos,
           "empty panel: in words, not just a blank");
     check(out.find("n / N") != std::string::npos,
           "empty panel: and says which key gets somewhere useful");

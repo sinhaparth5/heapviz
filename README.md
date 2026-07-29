@@ -190,12 +190,17 @@ Typing it blind works even when the echo is off.
 
 ## Project status
 
-Pre-alpha, and under active construction. The `LD_PRELOAD` interceptor works
-and captures allocations at about 31 ns per call. The terminal engine is
-complete enough to run: raw mode, a double-buffered grid, a differential
+Pre-alpha, and under active construction, but it runs: `heapviz -- ./your_app`
+and `heapviz --pid N` both attach to a real process and draw its heap. The
+`LD_PRELOAD` interceptor captures allocations at about 31 ns per call. The
+terminal engine underneath is raw mode, a double-buffered grid, a differential
 renderer that puts one write on the wire per frame, and a paced event loop that
-handles resizing and idles at close to no CPU. `heapviz --term-check` will show
-you all of it. There is no heap visualisation yet — that is the next milestone.
+handles resizing and idles at close to no CPU. Above that sit the spatial map,
+a movable cursor, a chunk inspector and a telemetry metrics panel.
+
+Not there yet: fragmentation analysis, snapshots and leak diffing, pausing, and
+the visual polish the mockup above shows. `heapviz --term-check` exercises the
+terminal layer and the map against a synthetic heap without needing a target.
 
 [**ROADMAP.md**](ROADMAP.md) tracks 212 tasks across 8 milestones, from the
 shared-memory ABI through the interceptor, sparse grid, ANSI engine,

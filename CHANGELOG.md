@@ -165,6 +165,16 @@ promise about the ABI or the CLI surface.
   largest, says how many others are there, and `Tab` moves between them. A cell
   holding nothing says so in words and points at the key that gets somewhere
   useful, rather than going blank.
+- A telemetry metrics panel beside the inspector: how much the program has
+  allocated in total, how many chunks it is holding now and how many bytes
+  those come to, the high-water mark and how far below it the program has come
+  back down, and how full the telemetry ring is — amber past half, red past
+  four fifths. Next to the ring reading is the number of events heapviz missed.
+  It is shown even at zero, because every other figure on the panel is wrong by
+  an unknown amount once that number is not, and on a terminal too narrow for
+  both it is the ring reading that gives way rather than the warning. The
+  fragmentation row is present but reads `--` until the analysis behind it
+  lands; it will not show a percentage it has not measured.
 - heapviz can now read a target's memory map, which is what tells it where the
   heap actually is rather than inferring bounds from the addresses it happens
   to have seen. It distinguishes the main `[heap]` from thread arenas and from

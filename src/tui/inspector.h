@@ -47,6 +47,7 @@
 #include "tui/cursor.h"
 #include "tui/framebuffer.h"
 #include "tui/heatmap.h"
+#include "tui/panel.h"
 #include "tui/region_map.h"
 
 #include <cstddef>
@@ -74,6 +75,13 @@ constexpr int kInspectorRows = 6;
 /* Below this the panel costs more rows than the map can spare, and a map
  * squeezed to four rows is not a heap map. It is dropped whole. */
 constexpr int kInspectorMinMapRows = 6;
+
+/* Narrowest the panel is allowed to get once M5.3's metrics panel is sharing
+ * the bottom block with it. `Real Size` is the longest value it prints and it
+ * starts at column 12, so below this the field that justifies the whole
+ * enrichment pass is the one being cut off. The metrics panel gives way
+ * instead -- it degrades to shorter values, and this one has none. */
+constexpr int kInspectorMinCols = 40;
 
 enum class ChunkStatus : std::uint8_t {
     Unallocated, /* nothing in this cell                          */
@@ -173,12 +181,6 @@ private:
     std::uint64_t            selected_ = 0; /* address, so Tab survives a rescan */
     std::uint64_t            scans_    = 0;
 };
-
-/* "1,024" -- a decimal count with thousands separators, which is how the
- * mockup's size fields read. Returns the length written. Exposed because
- * M5.3's metrics panel needs the identical formatting and two implementations
- * of a separator rule end up disagreeing about where the commas go. */
-std::size_t format_count(char *buf, std::size_t n, std::uint64_t v) noexcept;
 
 } // namespace hv
 

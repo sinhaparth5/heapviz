@@ -140,6 +140,13 @@ target_link_libraries(inspector_test PRIVATE heapviz_core)
 add_test(NAME inspector COMMAND inspector_test)
 set_tests_properties(inspector PROPERTIES TIMEOUT 60)
 
+# --- Telemetry metrics: counters, thresholds and the bottom split (M5.3) ---
+add_executable(metrics_test unit/metrics_test.cpp)
+heapviz_test_target(metrics_test)
+target_link_libraries(metrics_test PRIVATE heapviz_core)
+add_test(NAME metrics COMMAND metrics_test)
+set_tests_properties(metrics PROPERTIES TIMEOUT 60)
+
 # --- Capability detection, quantisers and fallback (M4.4) ------------------
 # Detection takes the environment strings as arguments rather than reading
 # them, so this needs no setenv and cannot disturb the tests around it.

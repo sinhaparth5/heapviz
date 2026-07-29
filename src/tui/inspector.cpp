@@ -21,6 +21,10 @@ namespace {
  * read than one that does not. */
 constexpr int kValueCol = 12;
 
+/* One past the last column `Address` writes into: `0x` plus sixteen hex digits.
+ * The only thing that shares a row with it needs to know where it ends. */
+constexpr int kAddressEndCol = kValueCol + 18;
+
 const ChunkDetail kNothing{};
 
 } // namespace
@@ -33,31 +37,6 @@ const char *chunk_status_str(ChunkStatus s) noexcept {
     case ChunkStatus::Freed:       return "FREED";
     }
     return "UNALLOCATED";
-}
-
-std::size_t format_count(char *buf, std::size_t n, std::uint64_t v) noexcept {
-    if (buf == nullptr || n == 0) return 0;
-
-    char digits[24];
-    const int len = std::snprintf(digits, sizeof digits, "%llu",
-                                  static_cast<unsigned long long>(v));
-    if (len <= 0) { buf[0] = '\0'; return 0; }
-
-    const auto d = static_cast<std::size_t>(len);
-    std::size_t out = 0;
-    for (std::size_t i = 0; i < d; ++i) {
-        /* A separator goes before every digit whose distance from the end is a
-         * multiple of three, except the first -- which is what stops "100" from
-         * coming out as ",100". */
-        if (i != 0 && (d - i) % 3 == 0) {
-            if (out + 1 >= n) break;
-            buf[out++] = ',';
-        }
-        if (out + 1 >= n) break;
-        buf[out++] = digits[i];
-    }
-    buf[out] = '\0';
-    return out;
 }
 
 const ChunkDetail &ChunkInspector::current() const noexcept {
@@ -220,21 +199,16 @@ void ChunkInspector::draw(Framebuffer &fb, Rect area, const Grid &g,
     char num[48];
     char human[32];
 
-    /* The rule, with the panel's name inset into it. M6.3 owns the chrome
-     * proper; this is the shape it will take, drawn with what M4.2 already
-     * provides. */
-    const int x0 = area.x;
-    fb.hline(x0, area.y, area.w, U'─', style_.frame, style_.bg);
-    fb.text(x0 + 2, area.y, " CHUNK INSPECTOR ", style_.accent, style_.bg,
-            kAttrBold);
+    panel_rule(fb, area, " CHUNK INSPECTOR ", style_.frame, style_.accent,
+               style_.bg);
 
     /* Before the first `/proc/<pid>/maps` scan there is no coordinate space, so
      * the cursor's coordinate means nothing yet. Said out loud rather than
      * shown as address zero, which would be a real-looking answer to a question
      * that has not been asked yet. */
     if (!g.valid()) {
-        fb.text(x0 + 2, area.y + 1, "waiting for the target's memory map",
-                style_.dim, style_.bg);
+        panel_text(fb, area, 2, 1, "waiting for the target's memory map",
+                   style_.dim, style_.bg);
         return;
     }
 
@@ -250,12 +224,11 @@ void ChunkInspector::draw(Framebuffer &fb, Rect area, const Grid &g,
     const ChunkDetail &d = current();
     const bool have = d.status != ChunkStatus::Unallocated;
 
-    int y = area.y + 1;
+    int dy = 1;
     const auto field = [&](const char *label, const char *value, Rgb colour) {
-        if (y >= area.y + area.h || y >= fb.height()) return;
-        fb.text(x0 + 2, y, label, style_.dim, style_.bg);
-        fb.text(x0 + kValueCol, y, value, colour, style_.bg);
-        ++y;
+        panel_text(fb, area, 2, dy, label, style_.dim, style_.bg);
+        panel_text(fb, area, kValueCol, dy, value, colour, style_.bg);
+        ++dy;
     };
 
     std::snprintf(line, sizeof line, "0x%016llx",
@@ -265,16 +238,16 @@ void ChunkInspector::draw(Framebuffer &fb, Rect area, const Grid &g,
     if (!have) {
         /* The empty state. Named, then explained, then told what to press --
          * three short lines rather than a blank panel, because a blank panel
-         * next to a working map reads as a bug in the panel. */
+         * next to a working map reads as a bug in the panel.
+         *
+         * Kept short enough to survive M5.3's split of the bottom block: a
+         * sentence that has to be truncated stops being an explanation and
+         * becomes another thing that looks broken. */
         field("Status", chunk_status_str(ChunkStatus::Unallocated), style_.dim);
-        if (y < area.y + area.h)
-            fb.text(x0 + 2, y++,
-                    "no allocation in this cell - it is address space the "
-                    "target has not used", style_.dim, style_.bg);
-        if (y < area.y + area.h)
-            fb.text(x0 + 2, y++,
-                    "n / N jump to the next cell that holds something",
-                    style_.dim, style_.bg);
+        panel_text(fb, area, 2, dy++, "address space the target has not used",
+                   style_.dim, style_.bg);
+        panel_text(fb, area, 2, dy++, "n / N find the next occupied cell",
+                   style_.dim, style_.bg);
         return;
     }
 
@@ -320,10 +293,17 @@ void ChunkInspector::draw(Framebuffer &fb, Rect area, const Grid &g,
         else
             std::snprintf(line, sizeof line, " %zu of %zu in this cell - Tab ",
                           pos_ + 1, total_);
-        const auto len = static_cast<int>(std::strlen(line));
-        if (area.w > len)
-            fb.text(x0 + area.w - len, area.y + 1, line, style_.accent,
-                    style_.bg);
+        /* It shares its row with the address, and since M5.3 split the bottom
+         * block this panel can be 48 columns wide -- narrow enough for the two
+         * to land on each other. An address half overwritten by a count is a
+         * wrong answer to the panel's first question, so the count gives way:
+         * first to a short form, then to nothing. */
+        if (area.w - static_cast<int>(std::strlen(line)) <= kAddressEndCol) {
+            std::snprintf(line, sizeof line, " %zu/%zu Tab ", pos_ + 1, total_);
+            if (area.w - static_cast<int>(std::strlen(line)) <= kAddressEndCol)
+                return;
+        }
+        panel_text_right(fb, area, 1, line, style_.accent, style_.bg);
     }
 }
 

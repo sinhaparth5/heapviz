@@ -31,6 +31,10 @@ constexpr Rgb kPanel = 0x000C0C0C;
 constexpr int kHeaderRows = 3;
 constexpr int kFooterRows = 1;
 
+/* The two bottom panels share their rows, so the row gate can be one gate. */
+static_assert(kMetricsRows == kInspectorRows,
+              "the bottom block is one band of rows, not two");
+
 std::uint32_t clamp_u32(std::uint64_t v) noexcept {
     return v > UINT32_MAX ? UINT32_MAX : static_cast<std::uint32_t>(v);
 }
@@ -140,6 +144,12 @@ void HeapApp::apply(const HvEvent *events, std::uint32_t n) noexcept {
         }
         live_bytes_ += e.usable;
 
+        /* The one figure nothing else keeps. Everything else on the metrics
+         * panel is derived from the live set, which the lines above have just
+         * got right; a cumulative total cannot be derived from a live set at
+         * all, so it is counted where the events are. */
+        metrics_.on_alloc(e.usable);
+
         map_.on_alloc(e.ptr, size, e.usable, ms);
         table_.insert_live(e.ptr, size, e.usable, ms, hv_event_get_tid(&e));
     }
@@ -183,6 +193,19 @@ bool HeapApp::update(std::uint64_t now_ns) {
      * a repack or a rebuild renumbers the cells, so a selection cached against
      * the old numbering describes a different part of the heap. */
     if (inspect_.refresh(table_, map_, cursor_, now_ms_, changed)) changed = true;
+
+    /* Sampled per frame rather than folded per event, because a peak is a
+     * property of a frame: memory the target allocated and freed between two
+     * frames was never on screen, and counting it would report a high-water
+     * mark for bytes the process may never have held at one time. */
+    MetricsSample ms{};
+    ms.live_chunks   = live_;
+    ms.live_bytes    = live_bytes_;
+    ms.ring_queued   = session_.queued();
+    ms.ring_capacity = session_.capacity();
+    ms.dropped       = session_.dropped() - dropped_at_attach_;
+    ms.now_ms        = now_ms_;
+    if (metrics_.sample(ms)) changed = true;
 
     return changed;
 }
@@ -362,9 +385,25 @@ Rect HeapApp::map_area(int w, int h) const noexcept {
     return Rect{0, top, w, h - top - kFooterRows - panel};
 }
 
+int HeapApp::metrics_cols(int w) const noexcept {
+    return metrics_split(w, kInspectorMinCols);
+}
+
 Rect HeapApp::inspector_area(int w, int h) const noexcept {
     if (!inspector_fits(h)) return Rect{};
-    return Rect{0, h - kFooterRows - kInspectorRows, w, kInspectorRows};
+    return Rect{0, h - kFooterRows - kInspectorRows, w - metrics_cols(w),
+                kInspectorRows};
+}
+
+Rect HeapApp::metrics_area(int w, int h) const noexcept {
+    /* Tied to the inspector's row gate rather than having its own: the two
+     * occupy the same rows, so a terminal that cannot spare them for one cannot
+     * spare them for the other. M6.2's solved layout is where a short-and-wide
+     * terminal gets to keep the metrics and lose the inspector. */
+    if (!inspector_fits(h)) return Rect{};
+    const int mw = metrics_cols(w);
+    if (mw == 0) return Rect{};
+    return Rect{w - mw, h - kFooterRows - kMetricsRows, mw, kMetricsRows};
 }
 
 void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
@@ -472,6 +511,12 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
     const Rect panel = inspector_area(w, h);
     if (panel.h > 0)
         inspect_.draw(fb, panel, grid_, cursor_, &regions_, now_ms_);
+
+    /* M5.3's panel, sharing the block. The two never overlap because both come
+     * out of `metrics_cols`, which is the only thing that knows where the
+     * boundary is. */
+    const Rect stats_panel = metrics_area(w, h);
+    if (stats_panel.w > 0) metrics_.draw(fb, stats_panel);
 
     /* The footer: the session's state, in the words the user needs. */
     /* Initialised rather than left to the switch below. It covers every

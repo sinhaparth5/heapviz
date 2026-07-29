@@ -21,11 +21,11 @@ this document is the record; nothing below should send a reader looking for it.
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[x]` | 20 / 20 |
 | M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[x]` | 34 / 34 |
-| M5 | Interactivity & analysis | cursor, frag, snapshots | `[~]` | 13 / 33 |
+| M5 | Interactivity & analysis | cursor, frag, snapshots | `[~]` | 19 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 148 / 212**
+**Total: 154 / 212**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -1345,16 +1345,70 @@ where the packed-coordinate translation is actually exercised.
 
 ### M5.3 Telemetry metrics panel
 
-- [ ] `Total Allocated`: cumulative bytes.
-- [ ] `Active Chunks`: live count, thousands-separated.
-- [ ] `Heap Fragmentation`: percentage plus the `[Low]` / `[Med]` / `[High]`
-      badge, colour-coded.
-- [ ] `Peak Memory`: high-water mark of live bytes.
-- [ ] `Telemetry Ring`: `(head - tail) / capacity` as a percentage. Turns amber
+- [x] `Total Allocated`: cumulative bytes.
+- [x] `Active Chunks`: live count, thousands-separated.
+- [x] `Heap Fragmentation`: percentage plus the `[Low]` / `[Med]` / `[High]`
+      badge, colour-coded. The badge and its thresholds are here; the number it
+      classifies arrives in M5.4, and until then the panel prints `--` rather
+      than `0%` -- see below.
+- [x] `Peak Memory`: high-water mark of live bytes.
+- [x] `Telemetry Ring`: `(head - tail) / capacity` as a percentage. Turns amber
       past 50%, red past 80%.
-- [ ] Dropped events counter. Not in the mockup, but every other number on the
+- [x] Dropped events counter. Not in the mockup, but every other number on the
       panel is wrong by an unknown amount once events start dropping. Put it next
       to the ring metric, red and impossible to miss when non-zero.
+
+The labels are shortened from the mockup's — `Allocated`, `Active`, `Peak`,
+`Fragmented`, `Ring` rather than `Total Allocated`, `Active Chunks` and so on.
+The mockup was drawn at a width this panel does not get: it is the narrower of
+two sharing the bottom block, and `Heap Fragmentation` alone is 18 of the 48
+columns it has at 120. The values are what the panel is for, so the labels gave
+way. M6.2 can put the long forms back if its solved layout finds the room.
+
+**The empty fragmentation slot is deliberate, and it prints `--`.** M5.4 owns
+walking the live set in address order, and doing that walk here would leave M5.4
+with nothing but a threshold table. What this milestone owns is the badge: the
+boundaries, the colours, and the distinction between "no analysis has run" and
+"the analysis said zero". A panel that printed `0%` before anything had walked
+the heap would be making a specific claim -- and the most flattering one
+available -- about a number nobody had computed.
+
+**The drop count takes the ring's row rather than sharing it.** Both figures
+live on the last row because the ring filling is what causes the drops. On a
+panel too narrow for both, the ring's depth is what goes: it is a curiosity,
+and the drop count is the reason not to believe the four figures above it. The
+`narrow:` cases in `metrics_test` are what stop a future layout change from
+silently reversing that priority.
+
+**Nothing on this panel is a function of the clock.** `Metrics::sample` returns
+false for an identical frame, including one arriving later, and including a ring
+whose raw depth moved without moving the percentage on screen. That last one
+matters: `queued` changes almost every frame on a busy target, and comparing it
+rather than the figure it produces would repaint the screen sixty times a second
+to redraw `3%`. The inspector's `Lifetime` ticks for the opposite reason, and
+the contrast is the point -- a number that should move and a number that should
+not, each saying so through the same return value.
+
+**The bottom block is now split, which needed clipping that did not exist.**
+`Framebuffer::text` clips to the screen, which was the right rule while the
+inspector had the whole width and is the wrong one now: an over-long value is a
+perfectly legal write that lands in the neighbour's labels. `src/tui/panel.h`
+holds the rect-clipped versions both panels draw through, plus the rule and
+`format_count`, which moved there from `inspector.h` -- the M5.2 comment on it
+predicted this milestone would want it, and a shared formatter belongs with the
+shared chrome rather than in one of its two users.
+
+`metrics_split` is the only code that decides the boundary, for the reason
+`Grid::configure` is the only code that decides `cell_bytes`. It starts from the
+mockup's 60/40 and then lets the two minimums override it, and when both cannot
+be met it is the metrics panel that goes -- the inspector is answering a question
+the user asked with the cursor, and this panel is answering one nobody asked.
+M6.2 owns the rest of the degradation (stacking the panels below ~100 columns);
+below 68 columns today the metrics panel is simply absent.
+
+Not in `--term-check`, for the same reason M5.2's panel is not: `DemoHeap` has
+no session and no ring, and giving it one would change what `frame_budget` and
+`resize_storm` measure.
 
 ### M5.4 Fragmentation analysis
 

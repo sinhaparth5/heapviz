@@ -223,6 +223,36 @@ void test_the_map_sees_the_heap() {
                 static_cast<unsigned long long>(d.addr), d.size,
                 static_cast<unsigned long long>(d.chunk_bytes()));
 
+    /* M5.3's counters against a real target. Each is checked against the model
+     * it is meant to summarise rather than against a constant: the point of
+     * this test is that the panel and the session cannot drift apart, and a
+     * threshold would only prove that churn allocated something. */
+    const hv::Metrics &met = app.metrics();
+    check(met.total_allocs() > 0, "metrics: the cumulative total saw the run");
+    check(met.total_bytes() >= met.live_bytes(),
+          "metrics: which is never below what is still held");
+    check(met.live_chunks() == app.live_chunks() &&
+              met.live_bytes() == app.live_bytes(),
+          "metrics: the live figures are the session's own");
+    check(met.peak_bytes() >= met.live_bytes(),
+          "metrics: the peak is at or above the current live set");
+
+    /* The one that needs a real ring behind it. `capacity` comes off the
+     * producer's header, so a percentage computed from a capacity of zero would
+     * be the symptom of the session and the panel disagreeing about whether
+     * anything is attached. */
+    check(met.ring_pct() <= 100, "metrics: the ring reads as a percentage");
+    check(met.frag_pct() < 0,
+          "metrics: and fragmentation is unknown until M5.4 computes it");
+
+    std::printf("  metrics: %llu allocs / %llu bytes cumulative, peak %llu, "
+                "ring %u%%, %llu dropped\n",
+                static_cast<unsigned long long>(met.total_allocs()),
+                static_cast<unsigned long long>(met.total_bytes()),
+                static_cast<unsigned long long>(met.peak_bytes()),
+                met.ring_pct(),
+                static_cast<unsigned long long>(met.dropped()));
+
     std::printf("  map: %llu of %llu live chunks on the map (%.0f%%), "
                 "%llu bytes, %d regions hidden\n",
                 static_cast<unsigned long long>(app.map().total_live_chunks()),

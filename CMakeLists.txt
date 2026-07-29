@@ -81,7 +81,9 @@ add_library(heapviz_core STATIC
   src/tui/heat_color.cpp
   src/tui/map_view.cpp
   src/tui/cursor.cpp
+  src/tui/panel.cpp
   src/tui/inspector.cpp
+  src/tui/metrics.cpp
   src/tui/demo_heap.cpp
   src/tui/renderer.cpp
   src/tui/event_loop.cpp

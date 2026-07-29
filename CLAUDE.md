@@ -105,8 +105,9 @@ is `hv::DemoHeap` in `heapviz_core` rather than a local class, because
 benchmark against a copy of the workload measures the copy. M5.1's cursor keys
 (`hjkl`, `HJKL`, `g`/`G`, `n`/`N`) are live there too, and are the half of that
 milestone a unit test cannot judge: whether `n` lands where the eye expected.
-M5.2's inspector panel is *not* there, because `DemoHeap` has no `ChunkTable`
-and giving it one would change what `frame_budget` and `resize_storm` measure.
+M5.2's inspector panel and M5.3's metrics panel are *not* there, because
+`DemoHeap` has no `ChunkTable` and no ring session, and giving it either would
+change what `frame_budget` and `resize_storm` measure.
 
 ### Preset differences that matter
 
@@ -119,7 +120,7 @@ budget, and the per-cell colour interpolation alone spends most of the frame's
 1 ms. Both binaries still build everywhere, so they can be run by hand in debug
 to read the numbers.
 
-Expected test counts when everything passes: debug 28, release 30, asan 25.
+Expected test counts when everything passes: debug 29, release 31, asan 26.
 
 `attach` is preload-driven, so it is skipped under ASan with the rest of them.
 It launches three `churn` processes over its run, each of which creates a 32 MiB
@@ -269,6 +270,31 @@ characters the colour does.
 `Grid::covers_whole_span()` is false when a span needs cells larger than 1 GiB.
 The legend says so rather than showing part of the heap as though it were all of
 it.
+
+### The bottom block holds two panels that cannot see each other
+
+`ChunkInspector` (M5.2) and `Metrics` (M5.3) share the six rows between the map
+and the footer. `metrics_split` in `metrics.h` is the only code that decides
+where the boundary is — it starts from the mockup's 60/40 and lets the two
+panels' minimum widths override it, and returns 0 when both cannot be met, in
+which case the inspector takes the block whole. `HeapApp::metrics_cols` is the
+only caller.
+
+Both panels draw through `src/tui/panel.h`, never through `Framebuffer` directly,
+and the reason is not style: `Framebuffer::text` clips to the *screen*, so a
+value longer than its panel is a perfectly legal write that lands in the
+neighbour's labels. `panel_text` and `panel_text_right` clip to the rect and take
+offsets relative to it, which is the form in which the bug cannot be written.
+`panel.h` also owns the inset rule and `format_count`.
+
+`Metrics` owns only the two figures nothing else keeps — the cumulative total
+and the peak. Everything else on that panel is fed in from `HeapApp`, which has
+already got the live set right; the recycled-address and saturating-decrement
+reasoning in `HeapApp::apply` is delicate enough that a second copy of it would
+be a second thing to keep correct. The peak is sampled per frame rather than
+folded per event, because memory allocated and freed between two frames was
+never on screen and a peak that counted it would report bytes the process may
+never have held at once.
 
 ### The TUI is one thread on a frame deadline
 
