@@ -176,7 +176,26 @@ void Metrics::draw(Framebuffer &fb, Rect area) const noexcept {
         if (badge == FragBadge::High) colour = style_.bad;
         std::snprintf(line, sizeof line, "%d%%  %s", frag_pct_,
                       frag_badge_str(badge));
-        field("Fragmented", line, colour);
+        const auto frag_len = static_cast<int>(std::strlen(line));
+
+        /* The largest hole shares the row rather than taking one of its own,
+         * because there are five rows and five other things to say. It is on
+         * this row and not another because it is the same measurement read a
+         * different way: the percentage says how much is stranded, and this says
+         * whether any one piece of it is still usable. Dropped when it does not
+         * fit, unlike the ring row's drop count -- a heap being 40% fragmented
+         * is already the whole warning, and the hole size only refines it. */
+        panel_text(fb, area, 2, dy, "Fragmented", style_.dim, style_.bg);
+        panel_text(fb, area, kValueCol, dy, line, colour, style_.bg);
+        if (gap_known_) {
+            char hole[64];
+            format_byte_size(human, sizeof human, largest_gap_);
+            std::snprintf(hole, sizeof hole, "max hole %s ", human);
+            const auto hole_len = static_cast<int>(std::strlen(hole));
+            if (kValueCol + frag_len + 2 + hole_len <= area.w)
+                panel_text_right(fb, area, dy, hole, style_.dim, style_.bg);
+        }
+        ++dy;
     }
 
     /* The ring, and the caveat. */

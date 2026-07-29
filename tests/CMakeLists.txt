@@ -147,6 +147,13 @@ target_link_libraries(metrics_test PRIVATE heapviz_core)
 add_test(NAME metrics COMMAND metrics_test)
 set_tests_properties(metrics PROPERTIES TIMEOUT 60)
 
+# --- Fragmentation: the sums, the ordered walk, and the region boundary (M5.4)
+add_executable(fragmentation_test unit/fragmentation_test.cpp)
+heapviz_test_target(fragmentation_test)
+target_link_libraries(fragmentation_test PRIVATE heapviz_core)
+add_test(NAME fragmentation COMMAND fragmentation_test)
+set_tests_properties(fragmentation PROPERTIES TIMEOUT 60)
+
 # --- Capability detection, quantisers and fallback (M4.4) ------------------
 # Detection takes the environment strings as arguments rather than reading
 # them, so this needs no setenv and cannot disturb the tests around it.

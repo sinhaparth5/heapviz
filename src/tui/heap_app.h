@@ -39,6 +39,7 @@
 #include "tui/chunk_table.h"
 #include "tui/cursor.h"
 #include "tui/event_loop.h"
+#include "tui/fragmentation.h"
 #include "tui/heatmap.h"
 #include "tui/inspector.h"
 #include "tui/map_view.h"
@@ -111,6 +112,7 @@ public:
     const MapCursor   &cursor() const noexcept { return cursor_; }
     const ChunkInspector &inspector() const noexcept { return inspect_; }
     const Metrics     &metrics() const noexcept { return metrics_; }
+    const FragAnalyzer &fragmentation() const noexcept { return frag_; }
     const Grid        &grid()   const noexcept { return grid_; }
     std::uint64_t refined_chunks() const noexcept { return refined_; }
     std::uint64_t exact_overhead() const noexcept { return exact_overhead_; }
@@ -156,6 +158,7 @@ private:
     MapCursor    cursor_;
     ChunkInspector inspect_;
     Metrics        metrics_;
+    FragAnalyzer   frag_;
 
     std::vector<HvEvent> batch_;
 

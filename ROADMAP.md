@@ -21,11 +21,11 @@ this document is the record; nothing below should send a reader looking for it.
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[x]` | 20 / 20 |
 | M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[x]` | 34 / 34 |
-| M5 | Interactivity & analysis | cursor, frag, snapshots | `[~]` | 19 / 33 |
+| M5 | Interactivity & analysis | cursor, frag, snapshots | `[~]` | 24 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 154 / 212**
+**Total: 159 / 212**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -1412,15 +1412,102 @@ no session and no ring, and giving it one would change what `frame_budget` and
 
 ### M5.4 Fragmentation analysis
 
-- [ ] Walk live chunks in address order (keep a sorted index, or sort per
-      analysis tick; do not sort per frame).
-- [ ] `fragmentation = total_gap_bytes / (max_addr - min_addr)` where gaps are
-      the spaces between consecutive live chunks.
-- [ ] Also compute largest free gap. "Can I still allocate 1 MB" is the
+- [x] Walk live chunks in address order (keep a sorted index, or sort per
+      analysis tick; do not sort per frame). Sorted per tick, and only for the
+      largest gap -- the percentage needs no order at all, see below.
+- [x] `fragmentation = total_gap_bytes / (max_addr - min_addr)` where gaps are
+      the spaces between consecutive live chunks. Accumulated per region rather
+      than once across the union of them.
+- [x] Also compute largest free gap. "Can I still allocate 1 MB" is the
       question users actually have.
-- [ ] Thresholds for the badge: Low < 15%, Med < 40%, High ≥ 40%. Tune against
+- [x] Thresholds for the badge: Low < 15%, Med < 40%, High ≥ 40%. Tune against
       the churn example and record the reasoning.
-- [ ] Recompute on a timer (e.g. 4 Hz), not per frame.
+- [x] Recompute on a timer (e.g. 4 Hz), not per frame.
+
+**The percentage needs no sort, and that is the whole design.** The obvious
+implementation walks the live set in address order summing each chunk's end to
+the next one's start. The walk is the expensive part and it is not needed,
+because the same figure is an identity:
+
+```
+sum of gaps  ==  (last end - first start)  -  sum of footprints
+```
+
+Both terms on the right are a min, a max and a sum, which one linear pass
+computes without ordering anything. So the headline number is exact, costs O(n)
+with no allocation, and is available on every heap regardless of size. The
+sorted walk survives only for the largest hole, which genuinely cannot be had
+any other way -- and *that* is what carries the cost bound: above 262,144
+records `largest_gap_known` goes false and the panel drops the field rather than
+printing a zero that would read as "no holes at all". A very large heap loses
+the secondary figure, never the headline one.
+
+**Each arena is measured separately.** M2.4's numbers apply directly: a threaded
+target's regions span about 23 TiB between them, of which perhaps 40 MiB is
+memory. One span across the lot reports 99.99% fragmented forever, on every
+target with more than one arena, which is most of them. So spans and gaps
+accumulate per region and are summed at the end, and the ordered walk carries a
+region cursor so a pair of chunks straddling a boundary contributes no hole --
+the distance from the top of one arena to the bottom of the next would otherwise
+answer "can I allocate 1 MB" with a confident yes about address space that is
+not a heap.
+
+**Free space at the ends is headroom, not fragmentation.** The span runs from
+the first live chunk to the last, not from the region's first byte to its last.
+Memory above the topmost allocation is one contiguous block that any request can
+use and that the heap grows into; counting it would call a program that just
+reserved an arena and has not filled it yet pathological. What this measures is
+memory trapped *between* things that are still alive, which is the only kind a
+well-behaved program cannot get back.
+
+**A chunk's footprint is `usable + 8`, and leaving the word out costs 25%.**
+ptmalloc packs chunks with nothing between them, and the one word an in-use
+chunk actually costs (`kChunkMinOverheadBytes`, whose reasoning `chunk_reader.h`
+already records) sits *below* the pointer the interceptor reported. Model a
+chunk as `[ptr, ptr + usable)` and every allocation in the heap acquires an
+eight-byte hole in front of it: a perfectly packed heap of 32-byte requests
+reads as 25% fragmented, straight into `[Med]` with nothing wrong. Adding the
+word back makes a densely packed heap measure zero, which is what it is. Note
+this needs no help from M2.2's enrichment: `size + overhead_exact` is the same
+figure by a longer road, so the percentage does not drift upward as the
+enrichment cursor sweeps the table.
+
+**The thresholds survive contact with churn.** Measured mid-run against every
+mode the workload has, at 120 frames against a six-second target:
+
+| mode | fragmentation | live chunks | largest hole | badge |
+|---|---|---|---|---|
+| `steady` t1 | 23% | 515 | 11 KB | `[Med]` |
+| `steady` t4 | 23% | 2051 | 13 KB | `[Med]` |
+| `bursty` t1 | 23% | 515 | 14 KB | `[Med]` |
+| `mixed` t1 | 40% | 320 | 19 KB | `[High]` |
+| `mixed` t4 | 50% | 1128 | 70 KB | `[High]` |
+| `fragment` t4 | 51% | 1461 | 13 KB | `[High]` |
+| `fragment` t1 | 63% | 265 | 44 KB | `[High]` |
+| `mmap` t1 | 0% | 3 | -- | `[Low]` |
+
+The boundaries are left exactly where this milestone specified them, because
+that separation is the one worth having: the mode written specifically to
+fragment the heap is the only family that reaches red, ordinary churn sits in
+amber, and a workload holding a few large mmapped blocks is green. 23% is
+therefore the *resting* state of a program that allocates and frees
+continuously, not an alarm -- glibc's tcache and fastbins hold those freed
+chunks, and they really are unavailable to a larger request, which is what
+external fragmentation means. Anyone tempted to raise the Low boundary so
+`steady` reads green should note that it would also swallow `mixed` t1 at 40%.
+
+**Sampled after the whole run, every mode reads 0%.** churn frees what it
+allocates, so a pass that ran once at exit would see two or three chunks and
+conclude the heap was perfect. The tuning numbers above are mid-run for that
+reason, and it is worth knowing when reading them back: this measures a heap at
+an instant, and the instant matters.
+
+The largest hole shares the fragmentation row rather than taking one of its own
+-- there are five rows and five other things to say -- and it is the field that
+gives way on a narrow panel, unlike the ring row's drop count. A heap at 40% is
+already the whole warning; the hole size only refines it.
+
+Not in `--term-check`, for the same reason M5.2's and M5.3's panels are not.
 
 ### M5.5 Snapshot & leak detection
 

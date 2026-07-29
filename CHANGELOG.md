@@ -175,6 +175,20 @@ promise about the ABI or the CLI surface.
   both it is the ring reading that gives way rather than the warning. The
   fragmentation row is present but reads `--` until the analysis behind it
   lands; it will not show a percentage it has not measured.
+- Fragmentation analysis, four times a second: how much of the memory your
+  program is holding onto is stranded between the allocations that are still
+  alive, as a percentage with a Low/Med/High badge, and the size of the largest
+  single hole — which is the figure that answers "can I still allocate 1 MB".
+  Free space *above* your topmost allocation is not counted: that is headroom
+  the heap grows into, in one piece, and calling it fragmentation would make a
+  program that has just reserved an arena look pathological. Each of a threaded
+  program's arenas is measured on its own, so the terabytes of address space
+  between them never appear as a hole you could allocate into. On a heap with
+  more than about a quarter of a million live chunks the largest-hole figure is
+  dropped rather than approximated, and the row leaves it off instead of showing
+  a zero that would read as "no holes at all"; the percentage stays exact at any
+  size. For reference, `examples/churn` measures 23% while churning steadily and
+  51–63% in its fragmenting mode.
 - heapviz can now read a target's memory map, which is what tells it where the
   heap actually is rather than inferring bounds from the addresses it happens
   to have seen. It distinguishes the main `[heap]` from thread arenas and from

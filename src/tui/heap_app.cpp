@@ -189,6 +189,16 @@ bool HeapApp::update(std::uint64_t now_ns) {
 
     if (enrich(now_ms_)) changed = true;
 
+    /* Fragmentation, on its own 4 Hz tick. After `repack`, because it measures
+     * chunks against the regions they sit in and a stale region list would put
+     * a whole arena's worth of chunks in the "outside" bucket; before the panel
+     * is told anything, because the panel only reports what it is handed. */
+    if (frag_.analyze(table_, regions_, now_ms_)) {
+        metrics_.set_fragmentation(frag_.percent());
+        metrics_.set_largest_gap(frag_.largest_gap(), frag_.largest_gap_known());
+        changed = true;
+    }
+
     /* After everything that could have moved the model, and told about it:
      * a repack or a rebuild renumbers the cells, so a selection cached against
      * the old numbering describes a different part of the heap. */

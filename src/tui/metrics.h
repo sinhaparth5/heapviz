@@ -70,9 +70,18 @@ constexpr int kMetricsWideCols = 44;
 constexpr unsigned kRingWarnPct = 50;
 constexpr unsigned kRingBadPct  = 80;
 
-/* Fragmentation badge boundaries. The number they classify arrives in M5.4,
- * which owns tuning them against the churn workload; they live here because the
- * badge is a display decision and this is the only thing that draws it. */
+/* Fragmentation badge boundaries. `FragAnalyzer` computes the number; these live
+ * here because the badge is a display decision and this is the only thing that
+ * draws it.
+ *
+ * Measured against every mode `examples/churn` has, mid-run: steady and bursty
+ * churn sit at 23%, mixed at 40-50%, and the mode written specifically to
+ * fragment the heap at 51-63%. So amber is the resting state of a program that
+ * allocates and frees continuously -- glibc's tcache and fastbins hold those
+ * freed chunks and they really are unavailable to a larger request -- and red is
+ * reached by the workload that is trying. Raising the amber boundary so ordinary
+ * churn reads green would also swallow `mixed` at 40%, which is the case worth
+ * catching. The full table is in ROADMAP.md's M5.4. */
 constexpr int kFragMedPct  = 15;
 constexpr int kFragHighPct = 40;
 
@@ -159,6 +168,18 @@ public:
      * about a heap nobody has walked. */
     void set_fragmentation(int pct) noexcept { frag_pct_ = pct; }
 
+    /* The biggest single hole between two live chunks, which is the figure that
+     * answers the question people actually ask about a fragmented heap. Two
+     * setters rather than one call taking both, because they have different
+     * availability: the percentage is exact on every heap, and the largest hole
+     * is dropped on one too large to sort. `known` false leaves the field off
+     * the panel entirely -- printing zero would read as "no holes", which is the
+     * opposite of what a heap that big is likely to be. */
+    void set_largest_gap(std::uint64_t bytes, bool known) noexcept {
+        largest_gap_ = bytes;
+        gap_known_   = known;
+    }
+
     std::uint64_t total_bytes()  const noexcept { return total_bytes_; }
     std::uint64_t total_allocs() const noexcept { return total_allocs_; }
     std::uint64_t peak_bytes()   const noexcept { return peak_bytes_; }
@@ -168,6 +189,8 @@ public:
     std::uint64_t dropped()      const noexcept { return live_.dropped; }
     int           frag_pct()     const noexcept { return frag_pct_; }
     FragBadge     badge()        const noexcept { return frag_badge(frag_pct_); }
+    std::uint64_t largest_gap()  const noexcept { return largest_gap_; }
+    bool          gap_known()    const noexcept { return gap_known_; }
 
     unsigned ring_pct() const noexcept {
         return ring_percent(live_.ring_queued, live_.ring_capacity);
@@ -185,6 +208,8 @@ private:
     std::uint64_t total_allocs_ = 0;
     std::uint64_t peak_bytes_   = 0;
     std::uint32_t peak_ms_      = 0;
+    std::uint64_t largest_gap_  = 0;
+    bool          gap_known_    = false;
     int           frag_pct_     = -1;
 };
 

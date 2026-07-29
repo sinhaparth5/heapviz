@@ -196,11 +196,12 @@ and `heapviz --pid N` both attach to a real process and draw its heap. The
 terminal engine underneath is raw mode, a double-buffered grid, a differential
 renderer that puts one write on the wire per frame, and a paced event loop that
 handles resizing and idles at close to no CPU. Above that sit the spatial map,
-a movable cursor, a chunk inspector and a telemetry metrics panel.
+a movable cursor, a chunk inspector, a telemetry metrics panel, and live
+fragmentation analysis with the largest free hole beside it.
 
-Not there yet: fragmentation analysis, snapshots and leak diffing, pausing, and
-the visual polish the mockup above shows. `heapviz --term-check` exercises the
-terminal layer and the map against a synthetic heap without needing a target.
+Not there yet: snapshots and leak diffing, pausing, and the visual polish the
+mockup above shows. `heapviz --term-check` exercises the terminal layer and the
+map against a synthetic heap without needing a target.
 
 [**ROADMAP.md**](ROADMAP.md) tracks 212 tasks across 8 milestones, from the
 shared-memory ABI through the interceptor, sparse grid, ANSI engine,

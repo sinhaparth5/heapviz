@@ -242,8 +242,26 @@ void test_the_map_sees_the_heap() {
      * be the symptom of the session and the panel disagreeing about whether
      * anything is attached. */
     check(met.ring_pct() <= 100, "metrics: the ring reads as a percentage");
-    check(met.frag_pct() < 0,
-          "metrics: and fragmentation is unknown until M5.4 computes it");
+
+    /* M5.4, against a real heap rather than a laid-out one. The unit test owns
+     * the arithmetic; what this owns is that the pass survives contact with
+     * addresses the target chose, regions /proc reported, and a live set that
+     * moved while the analysis was reading it. */
+    const hv::FragReport &fr = app.fragmentation().report();
+    check(fr.percent >= 0 && fr.percent <= 100,
+          "frag: the analysis produced a percentage of a real heap");
+    check(fr.chunks > 0, "frag: from chunks it found inside known regions");
+    check(fr.used_bytes <= fr.span_bytes,
+          "frag: whose footprints fit inside the span containing them");
+    check(fr.gap_bytes == fr.span_bytes - fr.used_bytes,
+          "frag: and the identity the pass rests on held");
+    /* churn's whole point is a heap that stays small while cycling through it,
+     * so a figure near 100% would mean the walk had gone wrong rather than that
+     * the workload had. */
+    check(fr.percent < 90, "frag: churn does not strand nine tenths of its heap");
+    if (fr.largest_gap_known)
+        check(fr.largest_gap <= fr.gap_bytes,
+              "frag: no single hole is larger than all of them together");
 
     std::printf("  metrics: %llu allocs / %llu bytes cumulative, peak %llu, "
                 "ring %u%%, %llu dropped\n",
@@ -252,6 +270,17 @@ void test_the_map_sees_the_heap() {
                 static_cast<unsigned long long>(met.peak_bytes()),
                 met.ring_pct(),
                 static_cast<unsigned long long>(met.dropped()));
+
+    /* Printed rather than asserted on: this is the number M5.4's thresholds
+     * were tuned against, and a run whose figure has drifted a long way from
+     * the roadmap's is worth seeing without having to fail a build to see it. */
+    std::printf("  frag: %d%% over %llu chunks in %zu region(s), "
+                "%llu of %llu bytes stranded, largest hole %llu%s\n",
+                fr.percent, static_cast<unsigned long long>(fr.chunks),
+                fr.regions, static_cast<unsigned long long>(fr.gap_bytes),
+                static_cast<unsigned long long>(fr.span_bytes),
+                static_cast<unsigned long long>(fr.largest_gap),
+                fr.largest_gap_known ? "" : " (not computed)");
 
     std::printf("  map: %llu of %llu live chunks on the map (%.0f%%), "
                 "%llu bytes, %d regions hidden\n",

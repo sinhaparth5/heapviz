@@ -105,9 +105,10 @@ is `hv::DemoHeap` in `heapviz_core` rather than a local class, because
 benchmark against a copy of the workload measures the copy. M5.1's cursor keys
 (`hjkl`, `HJKL`, `g`/`G`, `n`/`N`) are live there too, and are the half of that
 milestone a unit test cannot judge: whether `n` lands where the eye expected.
-M5.2's inspector panel and M5.3's metrics panel are *not* there, because
-`DemoHeap` has no `ChunkTable` and no ring session, and giving it either would
-change what `frame_budget` and `resize_storm` measure.
+M5.2's inspector panel, M5.3's metrics panel and M5.4's fragmentation figure are
+*not* there, because `DemoHeap` has no `ChunkTable`, no `RegionMap` and no ring
+session, and giving it any of them would change what `frame_budget` and
+`resize_storm` measure.
 
 ### Preset differences that matter
 
@@ -120,7 +121,7 @@ budget, and the per-cell colour interpolation alone spends most of the frame's
 1 ms. Both binaries still build everywhere, so they can be run by hand in debug
 to read the numbers.
 
-Expected test counts when everything passes: debug 29, release 31, asan 26.
+Expected test counts when everything passes: debug 30, release 32, asan 27.
 
 `attach` is preload-driven, so it is skipped under ASan with the rest of them.
 It launches three `churn` processes over its run, each of which creates a 32 MiB
@@ -295,6 +296,27 @@ be a second thing to keep correct. The peak is sampled per frame rather than
 folded per event, because memory allocated and freed between two frames was
 never on screen and a peak that counted it would report bytes the process may
 never have held at once.
+
+The fragmentation figure is fed in too, from `FragAnalyzer` (M5.4) on its own
+4 Hz tick, through `set_fragmentation` and `set_largest_gap`. They are separate
+setters because they have different availability, and that difference is the
+design:
+
+- **The percentage costs no sort.** `sum of gaps == (last end - first start) -
+  sum of footprints`, so one linear pass over the chunk table gives it exactly,
+  with no ordering and no allocation. It is available on every heap.
+- **The largest hole cannot be had that way**, so it is the only part that pays
+  for `std::sort`, and the only part with a cost bound: above `kFragMaxSorted`
+  records it is not computed and `largest_gap_known` goes false, which makes the
+  panel drop the field rather than print a zero reading as "no holes".
+
+Two things there are load-bearing and easy to undo. Spans and gaps accumulate
+**per region**, because one span across a threaded target's arenas is 23 TiB of
+which 40 MiB is memory — 99.99% forever, on most real targets. And a chunk's
+footprint is `usable + kChunkMinOverheadBytes`, because ptmalloc's in-use word
+sits *below* the reported pointer: drop it and every allocation in the heap gains
+an 8-byte hole in front of it, which is 25% on a heap of 32-byte requests that
+has nothing wrong with it.
 
 ### The TUI is one thread on a frame deadline
 
