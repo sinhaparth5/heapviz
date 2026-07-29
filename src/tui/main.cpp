@@ -123,11 +123,23 @@ public:
         if (c == 'q') { hv::request_quit(); return false; }
         if (c == 'a') { animate_ = !animate_; return true; }
         if (c == 't') { timing_ = !timing_; return true; }
+
+        /* Before the key log, not after: M5.1's bindings are the ones a person
+         * has to judge by feel -- whether `n` lands where the eye expected on a
+         * sparse map -- and this is the only place they can be driven against a
+         * real terminal. Logging them as well would be harmless; swallowing the
+         * movement would not. */
+        hv::CursorMove m{};
+        if (hv::cursor_move_for_key(c, m)) return cursor_.move(heap_.map(), m);
+
         if (c >= 32 && c < 127 && keys_.size() < 32) keys_.push_back(c);
         return true;
     }
 
-    void resized(int w, int h) override { heap_.fit(map_area(w, h)); }
+    void resized(int w, int h) override {
+        heap_.fit(map_area(w, h));
+        cursor_.refit(heap_.map().grid());
+    }
 
     bool update(std::uint64_t now_ns) override {
         if (start_ns_ == 0) start_ns_ = now_ns;
@@ -236,10 +248,12 @@ public:
                     s.overruns != 0 ? kWarn : kMuted, kPanel);
         }
 
-        view_.draw(fb, map_area(w, h), heap_.map(), now_ms_);
+        const hv::Rect area = map_area(w, h);
+        view_.draw(fb, area, heap_.map(), now_ms_);
+        view_.draw_cursor(fb, area, heap_.map(), cursor_);
 
-        fb.text(3, h - 2, "q or Ctrl-C to leave. Your shell should come back "
-                          "exactly as it was.", kInk, kPanel);
+        fb.text(3, h - 2, "q or Ctrl-C to leave. hjkl/HJKL move the cursor, "
+                          "g/G the ends, n/N the next chunk.", kInk, kPanel);
     }
 
 private:
@@ -296,6 +310,7 @@ private:
     hv::Capabilities caps_;
     hv::GlyphSet     glyphs_;
     hv::MapView      view_;
+    hv::MapCursor    cursor_;
     hv::DemoHeap     heap_;
     std::string   keys_;
     std::uint64_t start_ns_ = 0;

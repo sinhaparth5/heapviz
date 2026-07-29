@@ -102,7 +102,9 @@ and gutter landed it also carries a synthetic 4 MiB heap driven through the real
 `Grid`/`HeatMap`/`MapView`, so `a` is now also the map's churn switch. That heap
 is `hv::DemoHeap` in `heapviz_core` rather than a local class, because
 `frame_budget` and `resize_storm` measure the same object this drives — a
-benchmark against a copy of the workload measures the copy.
+benchmark against a copy of the workload measures the copy. M5.1's cursor keys
+(`hjkl`, `HJKL`, `g`/`G`, `n`/`N`) are live there too, and are the half of that
+milestone a unit test cannot judge: whether `n` lands where the eye expected.
 
 ### Preset differences that matter
 
@@ -115,7 +117,7 @@ budget, and the per-cell colour interpolation alone spends most of the frame's
 1 ms. Both binaries still build everywhere, so they can be run by hand in debug
 to read the numbers.
 
-Expected test counts when everything passes: debug 26, release 28, asan 23.
+Expected test counts when everything passes: debug 27, release 29, asan 24.
 
 `attach` is preload-driven, so it is skipped under ASan with the rest of them.
 It launches three `churn` processes over its run, each of which creates a 32 MiB
@@ -220,7 +222,7 @@ which ground rule #1 forbids inside the hook.
 
 ### The map is a pipeline, and each stage owns one decision
 
-Five objects in `src/tui/` turn a stream of events into a screenful of colour.
+Six objects in `src/tui/` turn a stream of events into a screenful of colour.
 They are layered strictly downwards — each knows the ones above it and nothing
 below — so the place to add something is wherever the decision it needs already
 lives:
@@ -232,6 +234,7 @@ lives:
 | `HeatMap` | per-cell aggregates, folded in incrementally | ~30 ns/event |
 | `HeatRamp` | (aggregate, now) → `Rgb`, in Oklab | 6.7 ns settled, 46 ns animating |
 | `MapView` | what fits on screen, and the glyphs | ~25 ns/cell |
+| `MapCursor` | which cell the user is pointing at, held as a *coordinate* so a resize reflows under it | one shift per query |
 
 Three properties hold the whole thing together, and each has a test that fails
 when it is broken:

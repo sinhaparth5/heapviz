@@ -93,6 +93,17 @@ struct CellAggregate {
     std::uint32_t last_free_ms   = kNoTime;
 };
 
+/* Whether a cell holds anything at all -- live payload, or the chunk-header
+ * bytes of something whose payload landed in the next cell along.
+ *
+ * This is the definition of "dark" that `MapView::glyph_for` paints and that
+ * M5.1's `n` / `N` skip over, kept in one place so the two cannot disagree. A
+ * cursor that stopped on a cell the user reads as empty does not look like a
+ * mismatched predicate; it looks like `n` being broken. */
+constexpr bool cell_occupied(const CellAggregate &a) noexcept {
+    return a.n_live != 0 || a.overhead_bytes != 0;
+}
+
 /* The precedence rule itself, as a free function over an aggregate.
  *
  * Separated from the map so the whole table can be tested directly. One level

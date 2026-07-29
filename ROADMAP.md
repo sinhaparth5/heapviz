@@ -21,11 +21,11 @@ this document is the record; nothing below should send a reader looking for it.
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[x]` | 20 / 20 |
 | M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[x]` | 34 / 34 |
-| M5 | Interactivity & analysis | cursor, frag, snapshots | `[ ]` | 0 / 33 |
+| M5 | Interactivity & analysis | cursor, frag, snapshots | `[~]` | 6 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 135 / 212**
+**Total: 141 / 212**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -1249,15 +1249,45 @@ is M7's problem, not M4's.
 
 ### M5.1 Spatial cursor
 
-- [ ] `h` / `j` / `k` / `l` move one cell.
-- [ ] `H` / `J` / `K` / `L` move one screen-ish jump (or 10 cells).
-- [ ] `g` / `G` jump to heap start / end.
-- [ ] `n` / `N` jump to next / previous non-empty cell. Essential on a sparse
+- [x] `h` / `j` / `k` / `l` move one cell.
+- [x] `H` / `J` / `K` / `L` move one screen-ish jump (or 10 cells).
+- [x] `g` / `G` jump to heap start / end.
+- [x] `n` / `N` jump to next / previous non-empty cell. Essential on a sparse
       map where most cells are dark.
-- [ ] Cursor rendered as the cyan box from the mockup, drawn over the map
+- [x] Cursor rendered as the cyan box from the mockup, drawn over the map
       without destroying the underlying cell colours.
-- [ ] Clamp to grid bounds; cursor survives a resize (clamp to new bounds, keep
+- [x] Clamp to grid bounds; cursor survives a resize (clamp to new bounds, keep
       the address if possible rather than the coordinate).
+
+`MapCursor` stores a *coordinate*, not a row and column, and derives the cell
+index from whatever grid is current. That is what makes the last box true: a
+resize reflows the map underneath a cursor that has not moved. The alternative
+-- holding cell 400 -- points at a different part of the heap after every
+SIGWINCH, with nothing on screen to say the inspection target moved, and M5.2
+would then be reading chunk details for an address the user never chose.
+
+Two decisions worth recording:
+
+**Horizontal movement is flat, vertical movement keeps the column.** `h` at
+column 0 steps onto the last column of the row above. The map is one ribbon of
+address space wrapped at the terminal's width, so that cell really is the
+previous one; stopping there would make on-screen addresses unreachable. The
+wrap has no meaning in the other axis, so `j` / `k` hold the column.
+
+**The box is a background swap, not a border.** One cell has no room for an
+outline, and painting one into the eight neighbours is exactly the "without
+destroying the underlying cell colours" the box rules out -- on a dense map it
+would hide eight allocations to point at one. The cell keeps its glyph and its
+heat colour and gains the `cursor` token as a background, so it still reads as
+whatever it was. The row's gutter label is recoloured to match, because one
+column in two hundred needs somewhere for the eye to start.
+
+`G` lands on the last cell holding *heap*, not the last cell on screen: cell
+size is rounded up to a power of two, so the tail of the grid is usually filler.
+`n` / `N` share `cell_occupied` with `MapView::glyph_for` rather than testing
+the aggregate themselves -- a cursor that stopped on a cell the user reads as
+dark does not look like two predicates that drifted, it looks like `n` being
+broken.
 
 ### M5.2 Chunk inspector panel
 

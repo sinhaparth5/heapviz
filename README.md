@@ -147,21 +147,29 @@ heapviz --pid 41820
 
 ## Keybindings
 
-Planned for v0.1.0.
+The full set is planned for v0.1.0. The last column says what works today, so
+that pressing a key and seeing nothing happen is answerable without reading the
+roadmap.
 
-| Key | Action |
-|-----|--------|
-| `h` `j` `k` `l` | Move the inspector cursor |
-| `H` `J` `K` `L` | Move in larger jumps |
-| `n` `N` | Jump to next / previous non-empty cell |
-| `g` `G` | Jump to heap start / end |
-| `Tab` | Cycle chunks within the selected cell |
-| `Space` | Pause the display |
-| `s` | Take a snapshot |
-| `d` | Toggle leak diff against the snapshot |
-| `r` | Reset statistics |
-| `?` | Help |
-| `q` | Quit |
+| Key | Action | |
+|-----|--------|---|
+| `h` `j` `k` `l` | Move the inspector cursor one cell | working |
+| `H` `J` `K` `L` | Move ten cells or ten rows | working |
+| `n` `N` | Jump to next / previous non-empty cell | working |
+| `g` `G` | Jump to heap start / end | working |
+| `Tab` | Cycle chunks within the selected cell | planned |
+| `Space` | Pause the display | planned |
+| `s` | Take a snapshot | planned |
+| `d` | Toggle leak diff against the snapshot | planned |
+| `r` | Reset statistics | planned |
+| `?` | Help | planned |
+| `q` | Quit | working |
+
+Horizontal movement runs along the address space rather than stopping at the
+edge of the terminal, so `h` in the first column steps onto the last cell of the
+row above — that cell really is the previous one. Vertical movement keeps the
+column. Resizing the terminal keeps the cursor on the same *address*, not the
+same square.
 
 ### If the terminal is left in a strange state
 

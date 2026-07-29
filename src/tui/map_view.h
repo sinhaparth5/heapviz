@@ -50,6 +50,7 @@
 #define HEAPVIZ_TUI_MAP_VIEW_H
 
 #include "tui/capabilities.h"
+#include "tui/cursor.h"
 #include "tui/framebuffer.h"
 #include "tui/grid.h"
 #include "tui/heat_color.h"
@@ -88,10 +89,11 @@ bool fit_grid(Grid &g, Rect area) noexcept;
 /* The colours that are not the heat palette: the chrome around the map. M6.1's
  * theme supplies these; the defaults are its tokens. */
 struct MapStyle {
-    Rgb ink  = 0x00D8D8D8; /* text  */
-    Rgb dim  = 0x007A7A7A; /* label */
-    Rgb warn = 0x00F5A623; /* accent, used for the truncation notice */
-    Rgb bg   = 0x000C0C0C; /* canvas */
+    Rgb ink    = 0x00D8D8D8; /* text  */
+    Rgb dim    = 0x007A7A7A; /* label */
+    Rgb warn   = 0x00F5A623; /* accent, used for the truncation notice */
+    Rgb bg     = 0x000C0C0C; /* canvas */
+    Rgb cursor = 0x0033D7E8; /* M6.1's `cursor` token */
 };
 
 class MapView {
@@ -109,6 +111,24 @@ public:
      * gets a clipped map rather than a corrupted framebuffer. */
     void draw(Framebuffer &fb, Rect area, const HeatMap &map,
               std::uint32_t now_ms) const noexcept;
+
+    /* Paints M5.1's cursor over a map already drawn into the same `area`.
+     *
+     * A second pass rather than a branch inside `draw`'s per-cell loop: the
+     * inner loop runs tens of thousands of times a frame against a 1 ms budget,
+     * and a compare that is true for exactly one of those iterations does not
+     * belong in it.
+     *
+     * It goes through `MapView` rather than being drawn by the caller because
+     * `map_layout` is the only code that knows where the cells landed. A cursor
+     * positioned from the caller's own idea of the geometry is M3.1's gutter bug
+     * again -- the highlight would sit on a neighbouring cell and look entirely
+     * plausible while naming the wrong address.
+     *
+     * No-op when the grid is invalid or the cursor's cell is off the drawn
+     * area, which a caller that has not refit after a resize can produce. */
+    void draw_cursor(Framebuffer &fb, Rect area, const HeatMap &map,
+                     const MapCursor &cur) const noexcept;
 
     /* Which of the four density glyphs a cell earns. Public because it is half
      * of what the display encodes, and a test that only checked colour would

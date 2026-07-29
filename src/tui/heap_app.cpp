@@ -296,11 +296,23 @@ void HeapApp::refit(int w, int h) {
         refined_ = 0;
         exact_overhead_ = 0;
     }
+
+    /* After the grid, never before: the cursor holds a coordinate and resolves
+     * it against whatever geometry is current, so re-clamping it against the
+     * old grid would pin it to a cell that is about to stop existing. */
+    cursor_.refit(grid_);
     geometry_dirty_ = false;
 }
 
 bool HeapApp::key(char byte) {
+    /* `q` first, and unconditionally. The cursor bindings are vim's, and vim's
+     * do not include `q` -- but a future mode that binds it would otherwise take
+     * the one key the loop has no opinion about, and a heapviz that cannot be
+     * quit is a terminal that has to be killed. */
     if (byte == 'q') { request_quit(); return false; }
+
+    CursorMove m{};
+    if (cursor_move_for_key(byte, m)) return cursor_.move(map_, m);
     return false;
 }
 
@@ -414,7 +426,24 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
         if (w > len) fb.text(w - len, 2, line, kBad, kPanel, kAttrBold);
     }
 
-    view_.draw(fb, map_area(w, h), map_, now_ms_);
+    const Rect area = map_area(w, h);
+    view_.draw(fb, area, map_, now_ms_);
+    view_.draw_cursor(fb, area, map_, cursor_);
+
+    /* Where the cursor is, as a real address. The packed coordinate it actually
+     * holds exists nowhere in the target, and printing it would be printing a
+     * number the user cannot look up in a debugger. M5.2 replaces this line with
+     * the chunk panel; until then it is what makes the cursor mean anything. */
+    if (grid_.valid()) {
+        std::uint64_t addr = 0;
+        const std::uint64_t coord = cursor_.coord();
+        if (regions_.empty() || !regions_.to_addr(coord, addr)) addr = coord;
+
+        std::snprintf(line, sizeof line, " cursor 0x%012llx ",
+                      static_cast<unsigned long long>(addr));
+        const auto len = static_cast<int>(std::strlen(line));
+        if (w > len) fb.text(w - len, h - 1, line, kGood, kPanel);
+    }
 
     /* The footer: the session's state, in the words the user needs. */
     /* Initialised rather than left to the switch below. It covers every
@@ -424,11 +453,12 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
     Rgb colour = kDim;
     switch (state_) {
     case SessionState::Live:
-        note = " q quit    watching";
+        note = " q quit   hjkl move  HJKL x10  g/G ends  n/N next chunk   watching";
         colour = kDim;
         break;
     case SessionState::Exited:
-        note = " q quit    TARGET EXITED - showing its last state";
+        note = " q quit   hjkl move  n/N next chunk   "
+               "TARGET EXITED - showing its last state";
         colour = kWarn;
         break;
     case SessionState::Detached:

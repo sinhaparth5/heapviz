@@ -37,6 +37,7 @@
 #include "tui/capabilities.h"
 #include "tui/chunk_reader.h"
 #include "tui/chunk_table.h"
+#include "tui/cursor.h"
 #include "tui/event_loop.h"
 #include "tui/heatmap.h"
 #include "tui/map_view.h"
@@ -105,6 +106,8 @@ public:
     const ChunkTable &table()   const noexcept { return table_; }
     const MapsScanner &maps()   const noexcept { return scanner_; }
     const ChunkReader &reader() const noexcept { return reader_; }
+    const MapCursor   &cursor() const noexcept { return cursor_; }
+    const Grid        &grid()   const noexcept { return grid_; }
     std::uint64_t refined_chunks() const noexcept { return refined_; }
     std::uint64_t exact_overhead() const noexcept { return exact_overhead_; }
 
@@ -132,6 +135,7 @@ private:
     MapsScanner  scanner_;
     RegionMap    regions_;
     ChunkReader  reader_;
+    MapCursor    cursor_;
 
     std::vector<HvEvent> batch_;
 

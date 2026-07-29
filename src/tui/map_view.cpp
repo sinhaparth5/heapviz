@@ -98,7 +98,7 @@ char32_t MapView::glyph_for(const CellAggregate &a,
     /* Nothing here at all: the faintest shade, so unallocated address space
      * reads as a field rather than as a hole. The colour says which of the two
      * kinds of nothing it is -- untouched, or freed a moment ago. */
-    if (a.n_live == 0 && a.overhead_bytes == 0) return glyphs_.light;
+    if (!cell_occupied(a)) return glyphs_.light;
     if (cell_bytes == 0) return glyphs_.full; /* no density information */
 
     const float d = static_cast<float>(a.live_bytes) /
@@ -225,6 +225,52 @@ void MapView::draw(Framebuffer &fb, Rect area, const HeatMap &map,
                    Cell{glyph_for(a, cell_bytes),
                         ramp_.color(a, cell_bytes, now_ms), style_.bg,
                         kAttrNone});
+        }
+    }
+}
+
+void MapView::draw_cursor(Framebuffer &fb, Rect area, const HeatMap &map,
+                          const MapCursor &cur) const noexcept {
+    const MapLayout l = map_layout(area);
+    if (!l.valid) return;
+
+    const Grid &g = map.grid();
+    if (!g.valid()) return;
+
+    const std::size_t i = cur.index(g);
+    const int row = g.row_of(i);
+    const int col = g.col_of(i);
+    if (row >= l.cells.h || col >= l.cells.w) return; /* clipped map */
+
+    const int x = l.cells.x + col;
+    const int y = l.cells.y + row;
+    if (!fb.contains(x, y)) return;
+
+    /* The mockup draws a box, and one cell has no room for a border: a real
+     * outline would have to be painted into the eight neighbours, which is
+     * exactly the "destroying the underlying cell colours" ROADMAP M5.1 rules
+     * out, and on a dense map it would hide eight allocations to point at one.
+     *
+     * So the highlight is a background swap on the single cell instead. The
+     * glyph and its heat colour are read back out of the buffer and kept, so the
+     * cursor says where you are without also lying about what is there -- a cell
+     * under the cursor still shows its own density and its own state. */
+    Cell c = fb.at_back(x, y);
+    c.bg = style_.cursor;
+    c.attrs = static_cast<std::uint8_t>(c.attrs | kAttrBold);
+    fb.put(x, y, c);
+
+    /* The gutter label for the cursor's row, in the same colour. On a wide map
+     * the cell is one column in two hundred and the eye needs somewhere to
+     * start; this is that anchor, and it costs nothing because the row was
+     * already labelled. */
+    if (l.gutter_x >= 0) {
+        for (int gx = l.gutter_x;
+             gx < l.gutter_x + static_cast<int>(kGutterWidth); ++gx) {
+            if (!fb.contains(gx, y)) break;
+            Cell lc = fb.at_back(gx, y);
+            lc.fg = style_.cursor;
+            fb.put(gx, y, lc);
         }
     }
 }

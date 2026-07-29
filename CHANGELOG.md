@@ -145,6 +145,16 @@ promise about the ABI or the CLI surface.
   glibc. Where reading the target is not permitted -- another user's process, or
   `ptrace_scope` set to 1 -- heapviz says `ptrace denied: overhead unavailable`
   and carries on with everything else rather than refusing to start.
+- A cursor you can move around the heap map, with vim keys: `h` `j` `k` `l` for
+  one cell, the same keys shifted for ten, `g` and `G` for the start and end of
+  the heap, and `n` / `N` to jump straight to the next or previous cell that
+  actually holds something — which is what makes a sparse map navigable, since
+  most cells on a real heap are empty. The cell under the cursor is highlighted
+  in cyan and keeps its own colour and shading, so pointing at something does
+  not hide it, and the address it sits on is shown in the status bar. Resizing
+  the terminal leaves the cursor on the same address rather than on the same
+  square. The keys work in `heapviz --term-check` too, against its synthetic
+  heap.
 - heapviz can now read a target's memory map, which is what tells it where the
   heap actually is rather than inferring bounds from the addresses it happens
   to have seen. It distinguishes the main `[heap]` from thread arenas and from

@@ -126,6 +126,13 @@ target_link_libraries(map_view_test PRIVATE heapviz_core)
 add_test(NAME map_view COMMAND map_view_test)
 set_tests_properties(map_view PROPERTIES TIMEOUT 60)
 
+# --- Spatial cursor: movement, clamping and the overlay (M5.1) -------------
+add_executable(cursor_test unit/cursor_test.cpp)
+heapviz_test_target(cursor_test)
+target_link_libraries(cursor_test PRIVATE heapviz_core)
+add_test(NAME cursor COMMAND cursor_test)
+set_tests_properties(cursor PROPERTIES TIMEOUT 60)
+
 # --- Capability detection, quantisers and fallback (M4.4) ------------------
 # Detection takes the environment strings as arguments rather than reading
 # them, so this needs no setenv and cannot disturb the tests around it.
