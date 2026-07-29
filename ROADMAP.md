@@ -1,8 +1,12 @@
 # heapviz roadmap and progress tracker
 
-Derived from `heap-doc.md`. That document is the *design intent*; this one is the
-*executable plan*. Every box here is small enough to finish in one sitting and
-concrete enough that "done" is not a judgement call.
+This is the *executable plan*, and now the only design document there is. Every
+box is small enough to finish in one sitting and concrete enough that "done" is
+not a judgement call.
+
+It was originally derived from `heap-doc.md`, which held the design intent.
+That file was deleted in `d3babdb` once its content had been absorbed here, so
+this document is the record; nothing below should send a reader looking for it.
 
 **Status legend:** `[ ]` not started · `[~]` in progress · `[x]` done · `[!]` blocked · `[-]` cut
 
@@ -56,7 +60,8 @@ if the tests pass.
 
 *Goal: two binaries that build, and a single header both of them agree on.*
 
-Nothing in `heap-doc.md` covers this, but M1 cannot start without it.
+Nothing in the original design intent covered this, but M1 cannot start without
+it.
 
 ### M0.1 Build system
 
@@ -229,14 +234,21 @@ reported.
       per event.
 - [x] Single 32-byte struct write into the ring slot; no memcpy of parts.
 
-### M1.6 SPSC lock-free ring buffer
+### M1.6 MPSC lock-free ring buffer
+
+**Planned as SPSC, shipped as MPSC.** Every thread in the target that calls
+`malloc` is a producer, so the single-producer assumption was not implementable;
+the producer box below is corrected to what was built. M1.8's verification notes
+carry the full reasoning and the ABI v2 bump — see "The ring is multi-producer,
+not SPSC" there, and do not restate it here.
 
 - [x] Capacity is a compile-time-configurable power of two (default 1 MiB
       events = 32 MiB). Index with `& (capacity - 1)`, never `%`.
-- [x] Producer: `head` loaded `relaxed` (we are the only writer), `tail` loaded
-      `acquire`, slot written, `head` stored `release`. The release store is
-      what publishes the payload. Get this wrong and the consumer reads torn
-      data on ARM.
+- [x] Producer: claims a slot by CAS on `head`, writes it, then publishes with a
+      `release` store of the commit and parity bits in `op`. The release store
+      is what publishes the payload. Get this wrong and the consumer reads torn
+      data on ARM. *(Planned as: `head` loaded `relaxed`, "we are the only
+      writer" — which is the assumption that turned out to be false.)*
 - [-] Producer caches the last-seen `tail` in a local and only re-reads the
       atomic when the cached value says "full". **Cut.** The optimisation
       assumes one producer with somewhere to keep the cache. With a CAS claim
@@ -247,6 +259,9 @@ reported.
 - [x] Full ⇒ `dropped.fetch_add(1, relaxed)` and return. Never spin, never
       block.
 - [x] Consumer: `tail` `relaxed`, `head` `acquire`, read, `tail` `release`.
+      Stops at the first slot missing its commit bit or carrying the wrong lap
+      parity. Commit alone is not enough: a fully-committed event from the
+      previous lap looks valid, and parity is what rejects it.
 - [x] Consumer drains in batches (read up to N events per frame) rather than one
       at a time.
 

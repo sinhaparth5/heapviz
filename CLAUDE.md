@@ -150,9 +150,10 @@ same dump header in both languages and require byte-identical output.
 
 ### The ring is multi-producer, not SPSC
 
-The roadmap's M1.6 text still describes an SPSC ring, as does the alt text on
-`README.md`'s "How it works" diagram. Both are stale: every thread in the target
-that calls `malloc` is a producer.
+The alt text on `README.md`'s "How it works" diagram still describes an SPSC
+ring, and `CHANGELOG.md`'s oldest entry still calls it one. Both are stale:
+every thread in the target that calls `malloc` is a producer. (`ROADMAP.md`'s
+M1.6 said so too until it was corrected; its M1.8 notes carry the reasoning.)
 `src/common/heapviz_ring.h` implements MPSC. Producers claim a slot with a CAS
 on `head`, then publish that slot through two flag bits packed into
 `HvEvent.op`:
