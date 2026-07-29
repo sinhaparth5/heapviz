@@ -179,6 +179,11 @@ bool HeapApp::update(std::uint64_t now_ns) {
 
     if (enrich(now_ms_)) changed = true;
 
+    /* After everything that could have moved the model, and told about it:
+     * a repack or a rebuild renumbers the cells, so a selection cached against
+     * the old numbering describes a different part of the heap. */
+    if (inspect_.refresh(table_, map_, cursor_, now_ms_, changed)) changed = true;
+
     return changed;
 }
 
@@ -267,7 +272,15 @@ bool HeapApp::enrich(std::uint32_t now_ms) noexcept {
         /* Recorded before the fold, and only folded if it was recorded: a
          * correction the table cannot remember is one that can never be undone
          * when the chunk is freed. */
-        if (!table_.mark_refined(enrich_ptrs_[i], info.overhead)) continue;
+        /* The header bits ride along with the overhead: the same read decoded
+         * both, and M5.2's `MMAPPED` status has no other source. Reading them
+         * off the address instead would be guessing at glibc's arena layout,
+         * which is wrong for any target using a different allocator. */
+        const auto header = static_cast<std::uint8_t>(
+            (info.mmapped ? kChunkFlagMmapped : 0) |
+            (info.non_main_arena ? kChunkFlagNonMain : 0));
+        if (!table_.mark_refined(enrich_ptrs_[i], info.overhead, header))
+            continue;
         ++refined_;
         exact_overhead_ += info.overhead;
 
@@ -312,7 +325,19 @@ bool HeapApp::key(char byte) {
     if (byte == 'q') { request_quit(); return false; }
 
     CursorMove m{};
-    if (cursor_move_for_key(byte, m)) return cursor_.move(map_, m);
+    if (cursor_move_for_key(byte, m)) {
+        if (!cursor_.move(map_, m)) return false;
+        /* Immediately rather than on the next 4 Hz tick: the panel is the
+         * answer to the keypress, and a quarter-second lag between moving the
+         * cursor and the details catching up reads as the tool being slow. */
+        inspect_.refresh(table_, map_, cursor_, now_ms_, true);
+        return true;
+    }
+
+    /* Tab cycles the chunks sharing the cursor's cell. A cell is a span of
+     * addresses and usually holds several, so without this the panel could only
+     * ever name the largest. */
+    if (byte == '\t') return inspect_.cycle();
     return false;
 }
 
@@ -327,9 +352,19 @@ void HeapApp::resized(int w, int h) {
     if (!bounds_.empty()) refit(w, h);
 }
 
+bool HeapApp::inspector_fits(int h) const noexcept {
+    return h - kHeaderRows - kFooterRows - kInspectorRows >= kInspectorMinMapRows;
+}
+
 Rect HeapApp::map_area(int w, int h) const noexcept {
     const int top = kHeaderRows;
-    return Rect{0, top, w, h - top - kFooterRows};
+    const int panel = inspector_fits(h) ? kInspectorRows : 0;
+    return Rect{0, top, w, h - top - kFooterRows - panel};
+}
+
+Rect HeapApp::inspector_area(int w, int h) const noexcept {
+    if (!inspector_fits(h)) return Rect{};
+    return Rect{0, h - kFooterRows - kInspectorRows, w, kInspectorRows};
 }
 
 void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
@@ -430,20 +465,13 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
     view_.draw(fb, area, map_, now_ms_);
     view_.draw_cursor(fb, area, map_, cursor_);
 
-    /* Where the cursor is, as a real address. The packed coordinate it actually
-     * holds exists nowhere in the target, and printing it would be printing a
-     * number the user cannot look up in a debugger. M5.2 replaces this line with
-     * the chunk panel; until then it is what makes the cursor mean anything. */
-    if (grid_.valid()) {
-        std::uint64_t addr = 0;
-        const std::uint64_t coord = cursor_.coord();
-        if (regions_.empty() || !regions_.to_addr(coord, addr)) addr = coord;
-
-        std::snprintf(line, sizeof line, " cursor 0x%012llx ",
-                      static_cast<unsigned long long>(addr));
-        const auto len = static_cast<int>(std::strlen(line));
-        if (w > len) fb.text(w - len, h - 1, line, kGood, kPanel);
-    }
+    /* M5.2's panel, which is where the cursor's address now lives. It prints
+     * the real address rather than the packed coordinate: the coordinate exists
+     * nowhere in the target, so it is not a number anyone could look up in a
+     * debugger. */
+    const Rect panel = inspector_area(w, h);
+    if (panel.h > 0)
+        inspect_.draw(fb, panel, grid_, cursor_, &regions_, now_ms_);
 
     /* The footer: the session's state, in the words the user needs. */
     /* Initialised rather than left to the switch below. It covers every

@@ -21,11 +21,11 @@ this document is the record; nothing below should send a reader looking for it.
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[x]` | 20 / 20 |
 | M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[x]` | 34 / 34 |
-| M5 | Interactivity & analysis | cursor, frag, snapshots | `[~]` | 6 / 33 |
+| M5 | Interactivity & analysis | cursor, frag, snapshots | `[~]` | 13 / 33 |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 141 / 212**
+**Total: 148 / 212**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -1293,16 +1293,55 @@ broken.
 
 Fields, matching the mockup exactly:
 
-- [ ] `Address`: full 64-bit pointer, `0x%016lx`.
-- [ ] `User Size`: requested bytes, with a human-readable unit in parens.
-- [ ] `Real Size`: usable/chunk size, with the header overhead called out
+- [x] `Address`: full 64-bit pointer, `0x%016lx`.
+- [x] `User Size`: requested bytes, with a human-readable unit in parens.
+- [x] `Real Size`: usable/chunk size, with the header overhead called out
       (`1,040 bytes (16B header)`).
-- [ ] `Status`: `ACTIVE (ptmalloc)` / `FREED` / `MMAPPED` / `UNALLOCATED`.
-- [ ] `Lifetime`: seconds since alloc for live chunks, alloc→free duration for
+- [x] `Status`: `ACTIVE (ptmalloc)` / `FREED` / `MMAPPED` / `UNALLOCATED`.
+- [x] `Lifetime`: seconds since alloc for live chunks, alloc→free duration for
       dead ones.
-- [ ] Cell → chunk reverse lookup. When a cell holds several chunks, show the
+- [x] Cell → chunk reverse lookup. When a cell holds several chunks, show the
       largest and a `+N more` affordance; `Tab` cycles through them.
-- [ ] Empty state that reads as intentional, not broken.
+- [x] Empty state that reads as intentional, not broken.
+
+**The lookup runs the wrong way, and that is the whole design problem here.**
+`ChunkTable` is keyed by pointer because every drained event is a lookup by
+pointer; nothing indexes it by cell, so "what is in this cell" is an O(table)
+scan — 65,536 slots at the default reservation. Three things keep it off the
+frame budget, and `ChunkInspector::scans()` exists so a test can prove each one:
+
+1. The `HeatMap` already answers "nothing" for free. A cell with no live bytes,
+   no overhead and no fading free cannot hold a chunk, and on a real heap that
+   is most of the screen — so most cursor positions never reach the scan.
+2. It only runs when the answer could have changed: the cursor moved, the
+   geometry was rebuilt, or the refresh interval elapsed.
+3. The interval is 250 ms, the same trade M5.4 below makes for the same reason.
+   A panel showing the cell as it was 200 ms ago is a snapshot, not a stale
+   display.
+
+Two more decisions:
+
+**`MMAPPED` comes from the chunk's own header, not from its address.** M2.2's
+enrichment pass already decodes `IS_MMAPPED`, so the bit now rides along with
+the exact overhead into `Chunk::flags`. Before the header has been read the
+status is `ACTIVE (ptmalloc)`, which is what the overwhelming majority are;
+guessing from the size would be encoding glibc's mmap threshold, and the target
+can change that at runtime with `mallopt`. `clear_refined` takes the header bits
+back with the figure they arrived with, so a stale `MMAPPED` cannot outlive a
+rebuild.
+
+**The candidate list is a bounded top-K by size, not the first K found.** A
+16 KiB cell holds hundreds of allocations. Taking the first sixty-four the table
+walk reached would make the headline chunk a function of hash probe order, so an
+unrelated rehash would rename the chunk on screen with nothing in the target
+having changed. `Tab`'s selection is held by address across the 4 Hz rescan for
+the same reason — reset it and cycling past the first chunk becomes impossible
+on a live target.
+
+Not in `--term-check`: `DemoHeap` has no `ChunkTable`, and giving it one would
+change what `frame_budget` and `resize_storm` measure. The panel is covered by
+`inspector_test` in process and by `attach_test` against a real target, which is
+where the packed-coordinate translation is actually exercised.
 
 ### M5.3 Telemetry metrics panel
 

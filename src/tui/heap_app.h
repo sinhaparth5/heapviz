@@ -40,6 +40,7 @@
 #include "tui/cursor.h"
 #include "tui/event_loop.h"
 #include "tui/heatmap.h"
+#include "tui/inspector.h"
 #include "tui/map_view.h"
 #include "tui/proc_maps.h"
 #include "tui/region_map.h"
@@ -107,6 +108,7 @@ public:
     const MapsScanner &maps()   const noexcept { return scanner_; }
     const ChunkReader &reader() const noexcept { return reader_; }
     const MapCursor   &cursor() const noexcept { return cursor_; }
+    const ChunkInspector &inspector() const noexcept { return inspect_; }
     const Grid        &grid()   const noexcept { return grid_; }
     std::uint64_t refined_chunks() const noexcept { return refined_; }
     std::uint64_t exact_overhead() const noexcept { return exact_overhead_; }
@@ -126,6 +128,13 @@ private:
     void refit(int w, int h);
     Rect map_area(int w, int h) const noexcept;
 
+    /* Where M5.2's panel goes, or a zero-height rect when the terminal is too
+     * short to give it rows without leaving the map unreadable. Both this and
+     * `map_area` are derived from the same three constants so that they cannot
+     * overlap -- M6.2 replaces the pair with a solved layout. */
+    Rect inspector_area(int w, int h) const noexcept;
+    bool inspector_fits(int h) const noexcept;
+
     RingSession &session_;
     Capabilities caps_;
     MapView      view_;
@@ -136,6 +145,7 @@ private:
     RegionMap    regions_;
     ChunkReader  reader_;
     MapCursor    cursor_;
+    ChunkInspector inspect_;
 
     std::vector<HvEvent> batch_;
 

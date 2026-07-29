@@ -155,6 +155,16 @@ promise about the ABI or the CLI surface.
   the terminal leaves the cursor on the same address rather than on the same
   square. The keys work in `heapviz --term-check` too, against its synthetic
   heap.
+- A chunk inspector under the map, describing whatever the cursor is on: the
+  full pointer, the size the program asked for, what the allocation really cost
+  the allocator, whether it is live, freed or `mmap`ed, and how long it has been
+  alive — or how long it lived, for one that has been freed. Real size is marked
+  as measured or inferred, because until heapviz has read that chunk's header
+  the overhead is a floor rather than a figure. A cell covers a span of
+  addresses and usually holds several allocations, so the panel shows the
+  largest, says how many others are there, and `Tab` moves between them. A cell
+  holding nothing says so in words and points at the key that gets somewhere
+  useful, rather than going blank.
 - heapviz can now read a target's memory map, which is what tells it where the
   heap actually is rather than inferring bounds from the addresses it happens
   to have seen. It distinguishes the main `[heap]` from thread arenas and from

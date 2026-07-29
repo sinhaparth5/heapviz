@@ -290,19 +290,26 @@ bool ChunkTable::insert_live(std::uint64_t key, std::uint32_t size,
     return true;
 }
 
-bool ChunkTable::mark_refined(std::uint64_t key,
-                              std::uint32_t exact_overhead) noexcept {
+bool ChunkTable::mark_refined(std::uint64_t key, std::uint32_t exact_overhead,
+                              std::uint8_t header_flags) noexcept {
     if (exact_overhead > UINT16_MAX) return false;
     Chunk *c = find(key);
     if (c == nullptr) return false;
     c->overhead_exact = static_cast<std::uint16_t>(exact_overhead);
-    c->flags = static_cast<std::uint8_t>(c->flags | kChunkFlagRefined);
+    c->flags = static_cast<std::uint8_t>(c->flags | kChunkFlagRefined |
+                                        (header_flags & kHeaderFlagMask));
     return true;
 }
 
 void ChunkTable::clear_refined() noexcept {
+    /* The header bits go with the mark. They were read in the same pass that
+     * produced the overhead, so a record that is about to be re-read must not
+     * keep a stale `MMAPPED` from the last one -- and their absence has to keep
+     * meaning "not read yet" rather than "read and false". */
+    constexpr auto keep = static_cast<std::uint8_t>(
+        ~(kChunkFlagRefined | kHeaderFlagMask));
     for (Chunk &c : slots_) {
-        c.flags = static_cast<std::uint8_t>(c.flags & ~kChunkFlagRefined);
+        c.flags = static_cast<std::uint8_t>(c.flags & keep);
         c.overhead_exact = 0;
     }
 }

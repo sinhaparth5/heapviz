@@ -197,6 +197,32 @@ void test_the_map_sees_the_heap() {
                           static_cast<double>(app.live_chunks());
     check(on_map > 0.5, "map: most of the live set is displayed");
 
+    /* M5.2's reverse lookup against a real target. This is the one path the
+     * unit test deliberately does not cover: it runs without a RegionMap, so
+     * the coordinate is the address, and the packed translation is precisely
+     * what could be wrong here without any in-process test noticing.
+     *
+     * `n` walks the cursor to a cell that holds something. Up to four presses
+     * rather than one, because the cursor starts at cell 0 and whether that
+     * cell is occupied is a property of the target's arena layout, not
+     * something this test should depend on. */
+    for (int i = 0; i < 4 && app.inspector().total() == 0; ++i) app.key('n');
+
+    check(app.inspector().total() > 0,
+          "inspect: n reached a cell and the panel found chunks in it");
+    const hv::ChunkDetail &d = app.inspector().current();
+    check(d.status != hv::ChunkStatus::Unallocated,
+          "inspect: with a status rather than the empty state");
+    check(d.addr != 0 && d.size > 0, "inspect: and a real address and size");
+    check(app.region_map().span_at_addr(d.addr) != nullptr,
+          "inspect: whose address is inside a region the scanner saw");
+
+    std::printf("  inspect: cell holds %zu chunks, largest 0x%llx "
+                "%u B user / %llu B real\n",
+                app.inspector().total(),
+                static_cast<unsigned long long>(d.addr), d.size,
+                static_cast<unsigned long long>(d.chunk_bytes()));
+
     std::printf("  map: %llu of %llu live chunks on the map (%.0f%%), "
                 "%llu bytes, %d regions hidden\n",
                 static_cast<unsigned long long>(app.map().total_live_chunks()),

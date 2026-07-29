@@ -133,6 +133,13 @@ target_link_libraries(cursor_test PRIVATE heapviz_core)
 add_test(NAME cursor COMMAND cursor_test)
 set_tests_properties(cursor PROPERTIES TIMEOUT 60)
 
+# --- Chunk inspector: reverse lookup, fields and the panel (M5.2) ----------
+add_executable(inspector_test unit/inspector_test.cpp)
+heapviz_test_target(inspector_test)
+target_link_libraries(inspector_test PRIVATE heapviz_core)
+add_test(NAME inspector COMMAND inspector_test)
+set_tests_properties(inspector PROPERTIES TIMEOUT 60)
+
 # --- Capability detection, quantisers and fallback (M4.4) ------------------
 # Detection takes the environment strings as arguments rather than reading
 # them, so this needs no setenv and cannot disturb the tests around it.

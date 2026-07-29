@@ -105,6 +105,8 @@ is `hv::DemoHeap` in `heapviz_core` rather than a local class, because
 benchmark against a copy of the workload measures the copy. M5.1's cursor keys
 (`hjkl`, `HJKL`, `g`/`G`, `n`/`N`) are live there too, and are the half of that
 milestone a unit test cannot judge: whether `n` lands where the eye expected.
+M5.2's inspector panel is *not* there, because `DemoHeap` has no `ChunkTable`
+and giving it one would change what `frame_budget` and `resize_storm` measure.
 
 ### Preset differences that matter
 
@@ -117,7 +119,7 @@ budget, and the per-cell colour interpolation alone spends most of the frame's
 1 ms. Both binaries still build everywhere, so they can be run by hand in debug
 to read the numbers.
 
-Expected test counts when everything passes: debug 27, release 29, asan 24.
+Expected test counts when everything passes: debug 28, release 30, asan 25.
 
 `attach` is preload-driven, so it is skipped under ASan with the rest of them.
 It launches three `churn` processes over its run, each of which creates a 32 MiB

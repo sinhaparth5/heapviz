@@ -53,7 +53,26 @@ enum ChunkFlags : std::uint8_t {
      * by `HeatMap::rebuild`, which recomputes every cell from the approximate
      * figure and thereby undoes the correction. */
     kChunkFlagRefined = 1u << 0,
+
+    /* The two ptmalloc header bits worth keeping, decoded by the same read that
+     * produced the exact overhead (M2.2) and kept for M5.2's inspector, which
+     * has to distinguish `MMAPPED` from `ACTIVE (ptmalloc)`.
+     *
+     * They are only ever set alongside kChunkFlagRefined, so their absence means
+     * "not read yet", not "false". The inspector says `ACTIVE (ptmalloc)` for an
+     * unrefined chunk because that is what the overwhelming majority are; a
+     * large mmap'd one is corrected within a second of the enrichment cursor
+     * reaching it. Guessing from the address instead would be wrong on any
+     * target whose allocator is not glibc. */
+    kChunkFlagMmapped  = 1u << 1,
+    kChunkFlagNonMain  = 1u << 2,
 };
+
+/* The bits `mark_refined` accepts from a decoded header, and the ones
+ * `clear_refined` takes back off again. Named so the two cannot drift: a bit
+ * that is set with the refinement and not cleared with it becomes a stale
+ * `MMAPPED` that survives every rebuild. */
+constexpr std::uint8_t kHeaderFlagMask = kChunkFlagMmapped | kChunkFlagNonMain;
 
 enum ChunkState : std::uint8_t {
     kChunkEmpty = 0, /* the slot has never held anything, or was shifted out */
@@ -150,8 +169,13 @@ public:
 
     /* Records the exact overhead for a key and marks it refined. False when the
      * key is unknown, or when the figure does not fit -- in which case the
-     * record keeps its approximation rather than a truncated lie. */
-    bool mark_refined(std::uint64_t key, std::uint32_t exact_overhead) noexcept;
+     * record keeps its approximation rather than a truncated lie.
+     *
+     * `header_flags` carries whatever of `kHeaderFlagMask` the same read
+     * decoded, so M5.2 can say `MMAPPED` from the chunk's own header rather
+     * than guessing from its address. */
+    bool mark_refined(std::uint64_t key, std::uint32_t exact_overhead,
+                      std::uint8_t header_flags = kChunkFlagNone) noexcept;
 
     /* Clears every refinement mark. Called after a rebuild, which recomputes
      * overhead from the approximate figure and so undoes the corrections: a

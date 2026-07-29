@@ -157,7 +157,7 @@ roadmap.
 | `H` `J` `K` `L` | Move ten cells or ten rows | working |
 | `n` `N` | Jump to next / previous non-empty cell | working |
 | `g` `G` | Jump to heap start / end | working |
-| `Tab` | Cycle chunks within the selected cell | planned |
+| `Tab` | Cycle chunks within the selected cell | working |
 | `Space` | Pause the display | planned |
 | `s` | Take a snapshot | planned |
 | `d` | Toggle leak diff against the snapshot | planned |
