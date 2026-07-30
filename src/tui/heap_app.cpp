@@ -194,13 +194,27 @@ bool HeapApp::update(std::uint64_t now_ns) {
     bool changed = false;
 
     if (state_ == SessionState::Live) {
-        /* Two independent signals, and both are needed. `producer_exited` is
+        /* Reaped before the liveness test, not after it, and the order is the
+         * whole correctness of this block. A target heapviz launched is its
+         * child, and an unreaped child is a zombie -- for which `kill(pid, 0)`
+         * *succeeds*, so `process_alive` says "running" for a process that has
+         * already exited. Reaping first is what makes the next line true; doing
+         * it afterwards, as this did until the launch path started being used,
+         * left the session permanently Live against a dead target and the
+         * display saying so only because `ChunkReader` had noticed
+         * independently. It is a `waitpid(WNOHANG)` per frame, which returns
+         * ECHILD immediately for a target attached to by pid rather than
+         * launched, and is the cheapest signal available for one we own.
+         *
+         * Two independent signals, and both are needed. `producer_exited` is
          * set by the interceptor's destructor, which SIGKILL skips; the pid
          * check catches that, but not a target that has run its destructor and
          * is still winding down. Whichever arrives first ends the session. */
+        reap_if_exited(session_.pid());
         if (session_.producer_exited() || !process_alive(session_.pid())) {
             state_ = SessionState::Exited;
-            reap_if_exited(session_.pid());
+            exited_ms_ = now_ms_;
+            build_exit_note();
             changed = true;
         }
     }
@@ -388,6 +402,34 @@ void HeapApp::refit(int, int) {
      * old grid would pin it to a cell that is about to stop existing. */
     cursor_.refit(grid_);
     geometry_dirty_ = false;
+}
+
+void HeapApp::set_launch(const std::string &output_path,
+                         const std::string &argv0) {
+    launch_log_   = output_path;
+    launch_argv0_ = argv0;
+}
+
+/* Built once, on the transition to Exited, and never in `draw`: this opens a
+ * file, and the frame path may not.
+ *
+ * Two sentences are possible and only one is shown, because the footer is one
+ * line. The `--instrument` hint wins when the target died in the first seconds,
+ * since then it is both the likeliest explanation and the only one the user can
+ * act on; otherwise the target's own last line is quoted, which for a program
+ * that ran and finished is the more honest thing to say. A target heapviz did
+ * not launch gets neither: its stdin was never heapviz's doing, and there is no
+ * log to quote. */
+void HeapApp::build_exit_note() {
+    exit_note_.clear();
+    if (launch_log_.empty()) return;
+
+    if (exited_ms_ != 0 && exited_ms_ < kInteractiveExitMs) {
+        exit_note_ = "needs a terminal? run: heapviz --instrument ";
+        exit_note_ += launch_argv0_;
+        return;
+    }
+    exit_note_ = last_output_line(launch_log_);
 }
 
 bool HeapApp::key(char byte) {
@@ -709,8 +751,19 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
             colour = snap_.diff_mode() ? theme_.leak : theme_.dim;
             break;
         case SessionState::Exited:
-            note = " TARGET EXITED   q quit  ? help  r reset"
-                   "  hjkl/HJKL move  g/G ends  n/N chunk";
+            /* The reason displaces the movement keys rather than sharing the
+             * line with them. A user reading this needs to know why the display
+             * stopped changing, and the cursor still works whether or not it is
+             * advertised -- but a reason that scrolled off the right edge would
+             * not be there at all. */
+            if (!exit_note_.empty())
+                std::snprintf(line, sizeof line, " TARGET EXITED: %s   q quit",
+                              exit_note_.c_str());
+            else
+                std::snprintf(line, sizeof line,
+                              " TARGET EXITED   q quit  ? help  r reset"
+                              "  hjkl/HJKL move  g/G ends  n/N chunk");
+            note = line;
             colour = theme_.accent;
             break;
         case SessionState::Detached:

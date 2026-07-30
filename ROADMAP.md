@@ -22,10 +22,10 @@ this document is the record; nothing below should send a reader looking for it.
 | M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[x]` | 34 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[x]` | 32 / 33 (1 cut) |
-| M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
+| M6 | Visual polish | the *beautiful* part | `[x]` | 20 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 167 / 212**
+**Total: 187 / 212**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.

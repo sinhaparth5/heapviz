@@ -43,6 +43,17 @@ promise about the ABI or the CLI surface.
 
 ### Added
 
+- Direct launch and attach syntax: `heapviz <command> [args...]` automatically
+  loads `libheapviz.so`, while `heapviz <pid>` attaches to a target that was
+  already instrumented. The explicit `--` and `--pid` forms remain supported.
+- `heapviz --instrument <command>` supports interactive targets without manual
+  environment setup: it injects the library, leaves the target in control of
+  terminal one, and prints the PID for heapviz in terminal two.
+- When a launched target exits, the footer says why rather than only "TARGET
+  EXITED": a target that died in the first three seconds is almost certainly one
+  that needed a terminal, so the footer shows the `--instrument` command that
+  would have worked, and any other target has its own last line of output quoted.
+  The same reasoning is repeated on exit, with the path to the target's full log.
 - M6 visual system: semantic dark/light themes (`--theme`), contrast-checked
   text colours, responsive stacked or 60/40 panels, bracketed box chrome,
   half-block map resolution, a four-weight density fallback, eased pulses,
@@ -223,6 +234,10 @@ promise about the ABI or the CLI surface.
 
 ### Changed
 
+- Targets launched by heapviz no longer share its terminal. Their stdin is
+  disabled and stdout/stderr are written to a named `/tmp` log, preventing an
+  interactive target from painting over the heapviz framebuffer or consuming
+  heapviz keybindings.
 - **ABI break: `HEAPVIZ_ABI_VERSION` 2 to 3.** Both halves must be rebuilt
   together. Only one heapviz can watch a target at a time, and a second one now
   says so and exits instead of attaching. Previously both would attach and each
@@ -260,6 +275,17 @@ promise about the ABI or the CLI surface.
   requirements, keybindings, and known limitations.
 - `assets/how-it-works.png` architecture diagram, replacing the ASCII drawing
   that was previously inline in the README.
+
+### Fixed
+
+- A target launched by heapviz that died without running its destructors — killed,
+  or exiting through `_exit` as some runtimes do — was never noticed as gone. The
+  header kept saying the session was live, the footer never showed TARGET EXITED,
+  and the exit summary reported a quit rather than an exit. heapviz is the parent
+  of anything it launches, and an unreaped child is a zombie that still answers
+  `kill(pid, 0)`, so the liveness check believed a dead process was running. Only
+  targets heapviz started itself were affected; attaching by pid was always
+  correct.
 
 ---
 

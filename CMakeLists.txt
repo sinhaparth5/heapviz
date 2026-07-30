@@ -87,6 +87,7 @@ add_library(heapviz_core STATIC
   src/tui/inspector.cpp
   src/tui/metrics.cpp
   src/tui/fragmentation.cpp
+  src/tui/heap_walker.cpp
   src/tui/snapshot.cpp
   src/tui/demo_heap.cpp
   src/tui/renderer.cpp
@@ -99,7 +100,7 @@ target_link_libraries(heapviz_core PUBLIC heapviz_abi)
 # _GNU_SOURCE. Set on the one file that needs it rather than on the library, so
 # the other fifteen keep compiling against plain POSIX.1-2008 and cannot pick up
 # a glibc-only function by accident.
-set_source_files_properties(src/tui/chunk_reader.cpp
+set_source_files_properties(src/tui/chunk_reader.cpp src/tui/heap_walker.cpp
   PROPERTIES COMPILE_DEFINITIONS _GNU_SOURCE)
 
 # ---------------------------------------------------------------------------

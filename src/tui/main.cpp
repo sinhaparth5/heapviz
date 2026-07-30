@@ -26,6 +26,7 @@
 #include "tui/terminal.h"
 #include "tui/theme.h"
 
+#include <charconv>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -49,8 +50,11 @@ void print_usage() {
         "heapviz - live heap allocation visualiser\n"
         "\n"
         "usage:\n"
-        "  heapviz -- <cmd> [args...]   launch a program under heapviz\n"
-        "  heapviz --pid <pid>          attach to a running target\n"
+        "  heapviz <cmd> [args...]      launch and instrument a program\n"
+        "  heapviz <pid>                attach to an instrumented target\n"
+        "  heapviz -- <cmd> [args...]   launch when the command starts with '-'\n"
+        "  heapviz --pid <pid>          explicit attach form\n"
+        "  heapviz --instrument <cmd>   run an interactive target for attachment\n"
         "  heapviz --version            print version and ABI details\n"
         "  heapviz --help               this message\n"
         "\n"
@@ -383,8 +387,13 @@ int term_check(const RunOptions &opts) {
 
 /* Runs an attached session to completion. Everything before the TerminalGuard
  * reports to the user's scrollback, because anything printed after it is torn
- * down with the alternate screen the moment the loop exits. */
-int attach_and_run(int pid, bool launched, const RunOptions &opts) {
+ * down with the alternate screen the moment the loop exits.
+ *
+ * `launch` is the launch heapviz performed, or null when attaching to a pid it
+ * did not start. It is needed after the loop, not before: the target's output
+ * log is the only place the reason for an early exit is written down. */
+int attach_and_run(int pid, const hv::Launch *launch, const RunOptions &opts) {
+    const bool launched = launch != nullptr;
     hv::RingSession session;
     const hv::AttachStatus st = session.attach(pid);
     if (st != hv::AttachStatus::Ok) {
@@ -392,8 +401,8 @@ int attach_and_run(int pid, bool launched, const RunOptions &opts) {
                      hv::attach_status_str(st), pid);
         if (st == hv::AttachStatus::NoSegment && !launched)
             std::fprintf(stderr,
-                         "heapviz: start it with `heapviz -- <cmd>`, or "
-                         "LD_PRELOAD libheapviz.so into it yourself\n");
+                         "heapviz: this process was not started by heapviz; "
+                         "use `heapviz <cmd> [args...]` to launch it\n");
         if (st == hv::AttachStatus::AlreadyWatched)
             std::fprintf(stderr, "heapviz: the other one is pid %u\n",
                          session.other_consumer());
@@ -428,6 +437,7 @@ int attach_and_run(int pid, bool launched, const RunOptions &opts) {
 
     hv::EventLoop loop(cfg);
     hv::HeapApp   app(session, caps, hv::theme_for(opts.theme), opts.animations);
+    if (launched) app.set_launch(launch->output_path, launch->argv0);
     const hv::LoopExit why = loop.run(app);
 
     guard.restore();
@@ -445,6 +455,26 @@ int attach_and_run(int pid, bool launched, const RunOptions &opts) {
                 static_cast<unsigned long long>(app.events_seen()), pid,
                 static_cast<unsigned long long>(s.frames),
                 static_cast<unsigned long long>(s.drawn));
+
+    /* "target exited" on its own is a true statement that answers nothing, and
+     * for a target heapviz launched it is usually heapviz's own doing. Say which
+     * of the two happened while the log is still on disk to prove it. */
+    if (launched && app.state() == hv::SessionState::Exited) {
+        const std::string why_it_died =
+            hv::last_output_line(launch->output_path);
+        if (!why_it_died.empty())
+            std::printf("heapviz: its last output was: %s\n",
+                        why_it_died.c_str());
+        std::printf("heapviz: full output: %s\n", launch->output_path.c_str());
+        if (app.exited_ms() != 0 && app.exited_ms() < hv::kInteractiveExitMs)
+            std::printf(
+                "heapviz: it exited after %ums, which is what a program that "
+                "needs a terminal does when heapviz gives it /dev/null on "
+                "stdin.\nheapviz: to profile an interactive program, run "
+                "`heapviz --instrument %s` in one terminal and attach to the "
+                "pid it prints from another.\n",
+                app.exited_ms(), launch->argv0.c_str());
+    }
     return why == hv::LoopExit::Quit || why == hv::LoopExit::FrameLimit ? 0 : 1;
 }
 
@@ -460,7 +490,8 @@ int launch_and_run(char **cmd, const RunOptions &opts) {
     /* The target blocks in its constructor until we claim the ring, so a
      * program that allocates and exits cannot finish -- and unlink its segment
      * -- before we have finished starting up. */
-    const hv::Launch l = hv::launch_target(cmd, preload, hv::kAttachTimeoutMs);
+    const hv::Launch l = hv::launch_target(
+        cmd, preload, hv::kAttachTimeoutMs, hv::TargetIo::Isolate);
     if (l.status != hv::LaunchStatus::Ok) {
         std::fprintf(stderr, "heapviz: %s: %s: %s\n",
                      hv::launch_status_str(l.status), cmd[0],
@@ -468,7 +499,39 @@ int launch_and_run(char **cmd, const RunOptions &opts) {
         return 1;
     }
 
-    return attach_and_run(l.pid, true, opts);
+    /* Printed even though the alternate screen is about to bury it, because it
+     * is still in the scrollback afterwards and because the launch may fail
+     * before the TUI ever starts. The exit summary is what the user actually
+     * reads, and it repeats the path. */
+    std::fprintf(stderr,
+                 "heapviz: target stdin is /dev/null while the TUI owns this "
+                 "terminal; use --instrument for an interactive program\n"
+                 "heapviz: target output: %s\n",
+                 l.output_path.c_str());
+    return attach_and_run(l.pid, &l, opts);
+}
+
+int instrument_and_exec(char **cmd) {
+    const std::string preload = hv::find_preload();
+    if (preload.empty()) {
+        std::fprintf(stderr,
+                     "heapviz: cannot find libheapviz.so next to this binary; "
+                     "set HEAPVIZ_PRELOAD to its path\n");
+        return 1;
+    }
+
+    constexpr int kInteractiveWaitMs = 60000;
+    const int pid = static_cast<int>(::getpid());
+    std::printf("heapviz: instrumented target PID %d\n"
+                "heapviz: in another terminal run: heapviz %d\n",
+                pid, pid);
+    std::fflush(stdout);
+
+    const int err =
+        hv::exec_instrumented_target(cmd, preload, kInteractiveWaitMs);
+    std::fprintf(stderr, "heapviz: could not run the command: %s: %s\n",
+                 cmd[0], std::strerror(err));
+    return 1;
 }
 
 } // namespace
@@ -481,7 +544,9 @@ int main(int argc, char **argv) {
      * `heapviz -- ./app --no-unicode` is asking the app for ASCII, not heapviz,
      * and a scan that read the whole of argv would quietly answer for both. */
     RunOptions opts;
-    enum class Action { None, Version, Help, TermCheck, Cleanup, Pid, Launch };
+    enum class Action {
+        None, Version, Help, TermCheck, Cleanup, Pid, Launch, Instrument
+    };
     Action action = Action::None;
     int pid = 0;
     char **command = nullptr;
@@ -523,6 +588,16 @@ int main(int argc, char **argv) {
         if (a == "--help" || a == "-h") { action = Action::Help; continue; }
         if (a == "--term-check") { action = Action::TermCheck; continue; }
         if (a == "--cleanup") { action = Action::Cleanup; continue; }
+        if (a == "--instrument") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr,
+                             "heapviz: --instrument needs a command to run\n");
+                return 2;
+            }
+            action = Action::Instrument;
+            command = argv + i + 1;
+            break;
+        }
         if (a == "--pid") {
             if (i + 1 >= argc) {
                 std::fprintf(stderr, "heapviz: --pid needs a process id\n");
@@ -536,9 +611,29 @@ int main(int argc, char **argv) {
             action = Action::Pid;
             continue;
         }
-        std::fprintf(stderr, "heapviz: not implemented yet: %s\n", argv[i]);
-        std::fprintf(stderr, "heapviz: try --help\n");
-        return 2;
+
+        if (!a.empty() && a.front() == '-') {
+            std::fprintf(stderr, "heapviz: unknown option: %s\n", argv[i]);
+            std::fprintf(stderr, "heapviz: try --help\n");
+            return 2;
+        }
+
+        /* A digits-only positional argument is the short attach form. Anything
+         * else starts a command, and the remainder belongs to that command.
+         * `--` remains available for an executable whose name starts with '-'. */
+        int positional_pid = 0;
+        const auto parsed = std::from_chars(
+            a.data(), a.data() + a.size(), positional_pid);
+        if (!a.empty() && parsed.ec == std::errc{} &&
+            parsed.ptr == a.data() + a.size() && positional_pid > 0) {
+            pid = positional_pid;
+            action = Action::Pid;
+            continue;
+        }
+
+        action = Action::Launch;
+        command = argv + i;
+        break;
     }
 
     switch (action) {
@@ -546,8 +641,9 @@ int main(int argc, char **argv) {
     case Action::Help: print_usage(); return 0;
     case Action::TermCheck: return term_check(opts);
     case Action::Cleanup: return cleanup();
-    case Action::Pid: return attach_and_run(pid, false, opts);
+    case Action::Pid: return attach_and_run(pid, nullptr, opts);
     case Action::Launch: return launch_and_run(command, opts);
+    case Action::Instrument: return instrument_and_exec(command);
     case Action::None: break;
     }
     print_usage();

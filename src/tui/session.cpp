@@ -69,6 +69,7 @@ const char *launch_status_str(LaunchStatus s) noexcept {
     switch (s) {
     case LaunchStatus::Ok:         return "launched";
     case LaunchStatus::NoPreload:  return "could not find libheapviz.so to inject";
+    case LaunchStatus::IoFailed:   return "could not isolate target input/output";
     case LaunchStatus::ForkFailed: return "could not fork";
     case LaunchStatus::ExecFailed: return "could not run the command";
     }
@@ -220,12 +221,13 @@ std::string find_preload() {
 }
 
 Launch launch_target(char *const argv[], const std::string &preload,
-                     int wait_ms) {
+                     int wait_ms, TargetIo io) {
     Launch out;
     if (argv == nullptr || argv[0] == nullptr || preload.empty()) {
         out.status = LaunchStatus::NoPreload;
         return out;
     }
+    out.argv0 = argv[0];
 
     /* Everything the child needs is built here, before the fork, rather than
      * between the fork and the exec. The parent is single-threaded (the event
@@ -246,6 +248,27 @@ Launch launch_target(char *const argv[], const std::string &preload,
     const bool set_wait = wait_ms > 0 && ::getenv("HEAPVIZ_WAIT_MS") == nullptr;
     if (set_wait) std::snprintf(wait_value, sizeof wait_value, "%d", wait_ms);
 
+    int target_log = -1;
+    int target_input = -1;
+    char log_template[] = "/tmp/heapviz-target-XXXXXX";
+    if (io == TargetIo::Isolate) {
+        target_log = ::mkstemp(log_template);
+        if (target_log < 0) {
+            out.status = LaunchStatus::IoFailed;
+            out.err = errno;
+            return out;
+        }
+        target_input = ::open("/dev/null", O_RDONLY);
+        if (target_input < 0) {
+            out.status = LaunchStatus::IoFailed;
+            out.err = errno;
+            ::close(target_log);
+            ::unlink(log_template);
+            return out;
+        }
+        out.output_path = log_template;
+    }
+
     /* Close-on-exec, so a successful exec closes it and the parent reads EOF.
      * Anything actually written to it is the child's errno from a failed exec:
      * the one report that has to cross a process boundary that no longer has a
@@ -257,6 +280,8 @@ Launch launch_target(char *const argv[], const std::string &preload,
     if (::pipe(fds) != 0) {
         out.status = LaunchStatus::ForkFailed;
         out.err = errno;
+        if (target_log >= 0) { ::close(target_log); ::unlink(log_template); }
+        if (target_input >= 0) ::close(target_input);
         return out;
     }
     ::fcntl(fds[0], F_SETFD, FD_CLOEXEC);
@@ -268,11 +293,26 @@ Launch launch_target(char *const argv[], const std::string &preload,
         ::close(fds[0]);
         ::close(fds[1]);
         out.status = LaunchStatus::ForkFailed;
+        if (target_log >= 0) { ::close(target_log); ::unlink(log_template); }
+        if (target_input >= 0) ::close(target_input);
         return out;
     }
 
     if (child == 0) {
         ::close(fds[0]);
+
+        if (io == TargetIo::Isolate) {
+            if (::dup2(target_input, STDIN_FILENO) < 0 ||
+                ::dup2(target_log, STDOUT_FILENO) < 0 ||
+                ::dup2(target_log, STDERR_FILENO) < 0) {
+                const int e = errno;
+                const ssize_t ignored = ::write(fds[1], &e, sizeof e);
+                (void)ignored;
+                ::_exit(127);
+            }
+            ::close(target_input);
+            ::close(target_log);
+        }
 
         ::setenv("LD_PRELOAD", preload_value.c_str(), 1);
         if (set_wait) ::setenv("HEAPVIZ_WAIT_MS", wait_value, 1);
@@ -287,6 +327,15 @@ Launch launch_target(char *const argv[], const std::string &preload,
     }
 
     ::close(fds[1]);
+    if (target_input >= 0) ::close(target_input);
+    if (target_log >= 0) ::close(target_log);
+
+    if (io == TargetIo::Isolate) {
+        char named[96];
+        std::snprintf(named, sizeof named, "/tmp/heapviz-target-%d.log",
+                      static_cast<int>(child));
+        if (::rename(log_template, named) == 0) out.output_path = named;
+    }
 
     int child_errno = 0;
     const ssize_t n = ::read(fds[0], &child_errno, sizeof child_errno);
@@ -299,11 +348,88 @@ Launch launch_target(char *const argv[], const std::string &preload,
         ::waitpid(child, &st, 0);
         out.status = LaunchStatus::ExecFailed;
         out.err = child_errno;
+        if (!out.output_path.empty()) {
+            ::unlink(out.output_path.c_str());
+            out.output_path.clear();
+        }
         return out;
     }
 
     out.status = LaunchStatus::Ok;
     out.pid = static_cast<int>(child);
+    return out;
+}
+
+int exec_instrumented_target(char *const argv[], const std::string &preload,
+                             int wait_ms) {
+    if (argv == nullptr || argv[0] == nullptr || preload.empty()) return EINVAL;
+
+    std::string preload_value = preload;
+    if (const char *existing = ::getenv("LD_PRELOAD");
+        existing != nullptr && existing[0] != '\0') {
+        preload_value += ':';
+        preload_value += existing;
+    }
+
+    char wait_value[16] = {};
+    if (wait_ms > 0 && ::getenv("HEAPVIZ_WAIT_MS") == nullptr) {
+        std::snprintf(wait_value, sizeof wait_value, "%d", wait_ms);
+        if (::setenv("HEAPVIZ_WAIT_MS", wait_value, 1) != 0) return errno;
+    }
+    if (::setenv("LD_PRELOAD", preload_value.c_str(), 1) != 0) return errno;
+
+    ::execvp(argv[0], argv);
+    return errno;
+}
+
+std::string last_output_line(const std::string &path) {
+    if (path.empty()) return {};
+    std::FILE *f = std::fopen(path.c_str(), "rb");
+    if (f == nullptr) return {};
+
+    /* Only the tail is read: this is the target's entire output, which has no
+     * bound worth trusting. */
+    constexpr long kTail = 4096;
+    if (std::fseek(f, 0, SEEK_END) == 0) {
+        const long end = std::ftell(f);
+        if (end > kTail) {
+            if (std::fseek(f, end - kTail, SEEK_SET) != 0) std::rewind(f);
+        } else {
+            std::rewind(f);
+        }
+    }
+    char buf[kTail];
+    const std::size_t n = std::fread(buf, 1, sizeof buf, f);
+    std::fclose(f);
+
+    std::string_view text{buf, n};
+    while (!text.empty() && (text.back() == '\n' || text.back() == '\r'))
+        text.remove_suffix(1);
+    const std::size_t nl = text.find_last_of('\n');
+    if (nl != std::string_view::npos) text = text.substr(nl + 1);
+
+    /* Whole escape sequences, not just the ESC byte. Dropping ESC alone is
+     * enough to keep the sequence from being obeyed, but it leaves the
+     * parameters behind as text -- a target cleared its screen and the note
+     * reads "[2J[HError: ...". So a CSI is consumed to its final byte, and any
+     * other control byte is dropped on its own. */
+    std::string out;
+    for (std::size_t i = 0; i < text.size(); ++i) {
+        const auto c = static_cast<unsigned char>(text[i]);
+        if (c == 0x1b) {
+            if (i + 1 < text.size() && text[i + 1] == '[') {
+                i += 2;
+                while (i < text.size() &&
+                       static_cast<unsigned char>(text[i]) < 0x40)
+                    ++i;
+            } else {
+                ++i; /* a two-byte escape; drop its selector too */
+            }
+            continue;
+        }
+        if (c >= 0x20) out.push_back(static_cast<char>(c));
+    }
+    if (out.size() > kMaxOutputLine) out.resize(kMaxOutputLine);
     return out;
 }
 

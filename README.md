@@ -133,14 +133,40 @@ it. heapviz degrades to interceptor-only data rather than failing.
 > Packaging, release binaries, and build-from-source instructions land with
 > **v0.1.0**. Track progress in [ROADMAP.md](ROADMAP.md).
 
-Planned usage, once it ships:
+Build-tree usage:
 
 ```bash
-# launch a program under heapviz
-heapviz -- ./my_app --some-flag
+# launch and instrument a program automatically
+./build/debug/heapviz ./my_app --some-flag
 
 # or attach to something already running libheapviz.so
-heapviz --pid 41820
+./build/debug/heapviz 41820
+```
+
+When heapviz launches a target, it owns the current terminal for its TUI.
+Target stdin is therefore `/dev/null`, and target stdout/stderr go to the
+private `/tmp/heapviz-target-PID.log` path printed at startup. This prevents a
+target's output—including another full-screen TUI—from corrupting the heap map.
+The log is left in place after the session ends so you can still read it;
+`--cleanup` reaps abandoned shared-memory rings, not these, so delete them
+yourself when you are done.
+
+Interactive targets must therefore run in a separate terminal and be attached by
+PID. A program that needs a terminal will exit within a second or two of being
+launched this way; heapviz says so when it does, quoting the target's own last
+line of output.
+
+For an interactive target, terminal 1 injects the library while leaving the
+target in control of that terminal:
+
+```bash
+./build/debug/heapviz --instrument claude
+```
+
+It prints the target PID. In terminal 2, start the profiler with that number:
+
+```bash
+./build/debug/heapviz PID
 ```
 
 ---
@@ -191,8 +217,9 @@ Typing it blind works even when the echo is off.
 
 ## Project status
 
-Pre-alpha, and under active construction, but it runs: `heapviz -- ./your_app`
-and `heapviz --pid N` both attach to a real process and draw its heap. The
+Pre-alpha, and under active construction, but it runs: `heapviz ./your_app`
+automatically loads the interceptor and draws the process's heap. `heapviz N`
+is the short attach form for a process that heapviz previously instrumented. The
 `LD_PRELOAD` interceptor captures allocations at about 31 ns per call. The
 terminal engine underneath is raw mode, a double-buffered grid, a differential
 renderer that puts one write on the wire per frame, and a paced event loop that

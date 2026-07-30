@@ -121,6 +121,7 @@ private:
 enum class LaunchStatus : std::uint8_t {
     Ok,
     NoPreload,   /* libheapviz.so could not be found to inject          */
+    IoFailed,    /* target stdin/output isolation could not be prepared */
     ForkFailed,
     ExecFailed,  /* the command does not exist or is not executable     */
 };
@@ -131,6 +132,13 @@ struct Launch {
     LaunchStatus status = LaunchStatus::Ok;
     int          pid    = -1;
     int          err    = 0; /* errno from the failed step, for strerror */
+    std::string  output_path; /* target stdout/stderr, when isolated     */
+    std::string  argv0;       /* what was launched, for diagnostics      */
+};
+
+enum class TargetIo : std::uint8_t {
+    Inherit, /* tests and advanced callers that own separate descriptors */
+    Isolate, /* stdin=/dev/null, stdout+stderr=a private /tmp log         */
 };
 
 /* Where `libheapviz.so` is, for LD_PRELOAD. In order: `HEAPVIZ_PRELOAD` if the
@@ -147,7 +155,31 @@ std::string find_preload();
  * program that allocates and exits is finished, and has unlinked its segment,
  * before heapviz has finished starting up. */
 Launch launch_target(char *const argv[], const std::string &preload,
-                     int wait_ms);
+                     int wait_ms, TargetIo io = TargetIo::Inherit);
+
+/* Replaces the current process with an instrumented target, preserving all
+ * three terminal descriptors. This is the two-terminal path for interactive
+ * applications: terminal one runs the target, terminal two attaches heapviz by
+ * the PID printed before this call. Returns errno only when exec fails. */
+int exec_instrumented_target(char *const argv[], const std::string &preload,
+                             int wait_ms);
+
+/* Long enough to carry a real diagnostic, short enough that the footer's own
+ * truncation is what decides what fits on screen rather than this. */
+constexpr std::size_t kMaxOutputLine = 200;
+
+/* The last non-empty line of a target's output log, or empty when there is none
+ * to read. A program that refuses to run without a terminal says so on stderr,
+ * which `TargetIo::Isolate` put in that file, so this one line is usually the
+ * whole answer to "why did it exit".
+ *
+ * Control bytes are stripped and the result is capped, because the target may
+ * have been mid-frame of its own full-screen UI and its escape sequences must
+ * not be replayed into a display -- or a shell -- that did not ask for them.
+ *
+ * Opens a file and allocates, so it belongs to the moment a session ends, never
+ * to a frame. */
+std::string last_output_line(const std::string &path);
 
 /* True when the pid is a process we could signal. `kill(pid, 0)` failing with
  * EPERM means it exists and belongs to someone else, which still counts. */

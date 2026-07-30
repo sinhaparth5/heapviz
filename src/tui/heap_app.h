@@ -52,6 +52,7 @@
 #include "tui/theme.h"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace hv {
@@ -80,6 +81,13 @@ constexpr std::size_t kEnrichPerPass = 512;
  * been allocated. */
 constexpr std::uint32_t kEnrichIntervalMs = 250;
 
+/* A launched target that dies this soon never got far enough to be profiling
+ * anything, and by far the commonest reason is that it wanted a terminal: heapviz
+ * owns this one, so the child was given `/dev/null` on stdin. Generous rather
+ * than tight, because the cost of a false positive is one extra sentence and the
+ * cost of a false negative is a user staring at a frozen map with no idea why. */
+constexpr std::uint32_t kInteractiveExitMs = 3000;
+
 /* How the session is doing, in the order the status line reports them. */
 enum class SessionState : std::uint8_t {
     Live,      /* attached, target running                              */
@@ -100,9 +108,33 @@ public:
     void     resized(int w, int h) override;
     void     draw(Framebuffer &fb, const LoopStats &stats) override;
 
+    /* What heapviz launched, when it launched it: the target's output log and
+     * the command that produced it. Never set when attaching to a pid heapviz
+     * did not start, because then neither the log nor the stdin decision is
+     * heapviz's to explain.
+     *
+     * Given to the app rather than kept in `main` because the answer is needed
+     * on screen the moment the target dies. Reporting it only in the exit
+     * summary means the reason is behind a keypress, and a user staring at a
+     * frozen map has no way to know there is anything to press. */
+    void set_launch(const std::string &output_path, const std::string &argv0);
+
     /* For the exit summary and for tests, which need to assert on what the
      * session saw without scraping the framebuffer. */
     SessionState state()        const noexcept { return state_; }
+
+    /* Milliseconds into the session at which the target was noticed gone, and 0
+     * while it is still running. The exit summary uses it to tell a target that
+     * ran and finished from one that could not start: a program launched by
+     * heapviz gets `/dev/null` on stdin, and one that needs a terminal dies in
+     * the first second or two -- which is a diagnosis heapviz can offer rather
+     * than leaving the user to read "target exited" and guess. */
+    std::uint32_t exited_ms()   const noexcept { return exited_ms_; }
+
+    /* The footer's one-line explanation of why the target is gone, or empty when
+     * there is nothing to add to "TARGET EXITED". Public so a test can assert on
+     * the sentence rather than scraping it back out of the framebuffer. */
+    const std::string &exit_note() const noexcept { return exit_note_; }
     std::uint64_t events_seen() const noexcept { return events_; }
     std::uint64_t frees_unknown() const noexcept { return frees_unknown_; }
     std::uint64_t live_chunks() const noexcept { return live_; }
@@ -180,6 +212,12 @@ private:
 
     std::uint64_t origin_ns_ = 0;
     std::uint32_t now_ms_    = 0;
+    void build_exit_note();
+
+    std::uint32_t exited_ms_ = 0;
+    std::string   launch_log_;   /* the target's output, when we launched it */
+    std::string   launch_argv0_;
+    std::string   exit_note_;    /* built once, on the transition to Exited  */
     std::uint64_t events_    = 0;
     std::uint64_t frees_unknown_ = 0;
     std::uint64_t dropped_at_attach_ = 0;

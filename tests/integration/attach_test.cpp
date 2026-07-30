@@ -30,6 +30,8 @@
 #include <string>
 #include <vector>
 
+#include <csignal>
+
 #include <fcntl.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -640,6 +642,164 @@ void test_launching_something_that_is_not_there() {
     check(l.pid < 0, "exec: and no pid to attach to");
 }
 
+/* The sentence the footer shows instead of a bare "TARGET EXITED".
+ *
+ * Two halves, because they fail differently. The parsing is exercised against a
+ * file written here rather than against a real target's log: what needs pinning
+ * is that the *last* line wins and that control bytes never survive, and a
+ * target that cooperatively prints one clean line would assert neither. The
+ * heuristic is then exercised end to end, because the thing that could break it
+ * is the timing, which no fixture can fake. */
+void test_the_exit_note_explains_itself() {
+    char path[] = "/tmp/heapviz-note-XXXXXX";
+    const int fd = ::mkstemp(path);
+    check(fd >= 0, "note: a scratch log");
+    if (fd < 0) return;
+
+    /* An earlier line, then a redraw of somebody's full-screen UI, then the line
+     * that actually matters -- which is the shape a dying TUI leaves behind. */
+    const std::string written =
+        "starting up\n\x1b[2J\x1b[HError: needs a \x07terminal\n\n";
+    check(::write(fd, written.data(), written.size()) > 0, "note: written");
+    ::close(fd);
+
+    const std::string line = hv::last_output_line(path);
+    check(line == "Error: needs a terminal",
+          "note: the last line survives, stripped of control bytes");
+    if (line != "Error: needs a terminal")
+        std::fprintf(stderr, "  got: [%s]\n", line.c_str());
+    ::unlink(path);
+
+    check(hv::last_output_line("/definitely/not/a/log").empty(),
+          "note: a log that is not there is not an error");
+
+    /* And the live half: a target that dies in the first seconds is explained by
+     * the thing the user can act on, not by its own last words. */
+    std::vector<char *> argv{const_cast<char *>(g_churn),
+                             const_cast<char *>("--threads"),
+                             const_cast<char *>("1"),
+                             const_cast<char *>("--seconds"),
+                             const_cast<char *>("1"),
+                             nullptr};
+    const hv::Launch l = hv::launch_target(argv.data(), g_preload,
+                                           hv::kAttachTimeoutMs,
+                                           hv::TargetIo::Isolate);
+    check(l.status == hv::LaunchStatus::Ok, "note: churn launched, isolated");
+    if (l.status != hv::LaunchStatus::Ok) return;
+
+    hv::RingSession session;
+    const hv::AttachStatus st = session.attach(l.pid);
+    check(st == hv::AttachStatus::Ok, "note: attached");
+    if (st != hv::AttachStatus::Ok) { wait_for(l.pid); return; }
+
+    const int devnull = ::open("/dev/null", O_RDONLY);
+    hv::EventLoop loop(loop_config(devnull, 400));
+    hv::HeapApp   app(session, hv::Capabilities{});
+    app.set_launch(l.output_path, l.argv0);
+    loop.run(app);
+    ::close(devnull);
+
+    check(app.state() == hv::SessionState::Exited, "note: it exited");
+    check(app.exited_ms() < hv::kInteractiveExitMs,
+          "note: inside the window that earns the hint");
+    check(app.exit_note().find("--instrument") != std::string::npos,
+          "note: so the footer names the command that would have worked");
+    check(app.exit_note().find(g_churn) != std::string::npos,
+          "note: and names the program it would run");
+    std::printf("  note: footer said \"%s\"\n", app.exit_note().c_str());
+
+    session.detach();
+    wait_for(l.pid);
+    if (!l.output_path.empty()) ::unlink(l.output_path.c_str());
+}
+
+/* A target that is SIGKILLed, which is the only way to reach the second of
+ * `HeapApp::update`'s two exit signals.
+ *
+ * `test_launch_attach_and_watch` also asserts that an exit is noticed, but it
+ * cannot hold this: churn exits by returning from main, so the interceptor's
+ * destructor runs and sets `producer_exited`, and the first signal answers before
+ * the pid check is ever consulted. SIGKILL skips the destructor, so this is the
+ * case that depends on `process_alive` -- and `process_alive` is a lie for an
+ * unreaped child, because `kill(pid, 0)` succeeds on a zombie. heapviz is the
+ * parent of anything it launched, so unless `update` reaps before it tests, the
+ * session stays Live forever against a target that is already dead.
+ *
+ * That was a real bug: it survived the whole of M2 to M6 because every test
+ * target until now exited cleanly, and it showed up the first time a launched
+ * target died without running its destructors. */
+void test_a_killed_target_is_noticed() {
+    const int pid = launch_churn({"--threads", "1", "--seconds", "30"});
+    check(pid > 0, "kill: churn launched");
+    if (pid <= 0) return;
+
+    hv::RingSession session;
+    const hv::AttachStatus st = session.attach(pid);
+    check(st == hv::AttachStatus::Ok, "kill: attached to it");
+    if (st != hv::AttachStatus::Ok) { wait_for(pid); return; }
+
+    const int devnull = ::open("/dev/null", O_RDONLY);
+    hv::HeapApp app(session, hv::Capabilities{});
+
+    /* Watched briefly first, so the session is unambiguously Live before the
+     * kill: a test that asserted Exited without ever having been Live would pass
+     * against an app that never attached at all. */
+    hv::EventLoop before(loop_config(devnull, 20));
+    before.run(app);
+    check(app.state() == hv::SessionState::Live, "kill: the session is live");
+
+    check(::kill(static_cast<pid_t>(pid), SIGKILL) == 0, "kill: SIGKILL sent");
+    check(!session.producer_exited(),
+          "kill: and the destructor did not run, so the ring does not say so");
+
+    /* Generously more frames than it takes: the point is that it happens at all,
+     * and with the reap in the wrong place no number of frames is enough. */
+    hv::EventLoop after(loop_config(devnull, 240));
+    after.run(app);
+    ::close(devnull);
+
+    check(app.state() == hv::SessionState::Exited,
+          "kill: a killed target is still noticed as gone");
+    check(app.exited_ms() != 0, "kill: and the session records when");
+
+    session.detach();
+    wait_for(pid);
+}
+
+void test_isolated_target_output() {
+    char *argv[] = {
+        const_cast<char *>(g_churn),
+        const_cast<char *>("--threads"), const_cast<char *>("1"),
+        const_cast<char *>("--seconds"), const_cast<char *>("0.1"),
+        nullptr};
+
+    const hv::Launch l = hv::launch_target(
+        argv, g_preload, hv::kAttachTimeoutMs, hv::TargetIo::Isolate);
+    check(l.status == hv::LaunchStatus::Ok,
+          "stdio: an isolated target launches");
+    check(!l.output_path.empty(), "stdio: it names a private output log");
+    if (l.status != hv::LaunchStatus::Ok) return;
+
+    hv::RingSession session;
+    check(session.attach(l.pid) == hv::AttachStatus::Ok,
+          "stdio: the isolated target can still be attached");
+    session.detach();
+    wait_for(l.pid);
+
+    std::FILE *file = std::fopen(l.output_path.c_str(), "rb");
+    check(file != nullptr, "stdio: the output log exists");
+    std::string text;
+    if (file != nullptr) {
+        char buf[512];
+        while (const std::size_t n = std::fread(buf, 1, sizeof buf, file))
+            text.append(buf, n);
+        std::fclose(file);
+    }
+    check(text.find("churn:") != std::string::npos,
+          "stdio: target output went to the log");
+    ::unlink(l.output_path.c_str());
+}
+
 void test_finding_the_preload() {
     /* The beside-the-binary search is deliberately not asserted here. It looks
      * next to /proc/self/exe, and /proc/self/exe is this test, which lives in
@@ -670,6 +830,9 @@ int main(int argc, char **argv) {
 
     test_finding_the_preload();
     test_launching_something_that_is_not_there();
+    test_isolated_target_output();
+    test_a_killed_target_is_noticed();
+    test_the_exit_note_explains_itself();
     test_attaching_to_nothing();
     test_launch_attach_and_watch();
     test_the_map_sees_the_heap();

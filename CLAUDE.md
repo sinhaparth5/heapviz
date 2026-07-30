@@ -70,14 +70,17 @@ cannot exit and unlink its segment before anyone attaches).
 
 ### What the `heapviz` binary can actually do today
 
-Attach landed in M2.3, so `--pid <n>` and `-- <cmd>` both work and the binary
-shows a real heap. Six commands: `--version` (`-V`), `--help` (`-h`),
-`--term-check`, `--cleanup`, `--pid`, and `--`, plus two modifiers,
-`--debug-timing` and `--no-unicode`:
+Attach landed in M2.3 and the binary shows a real heap. Commands: `--version`
+(`-V`), `--help` (`-h`), `--term-check`, `--cleanup`, `--pid`, `--instrument`,
+`--`, and the two positional forms; modifiers are `--debug-timing`,
+`--no-unicode`, `--no-animation` and `--theme dark|light`:
 
 ```bash
-./build/debug/heapviz -- ./build/debug/churn --threads 1 --seconds 5
-./build/debug/heapviz --pid $(pgrep -n churn)        # one consumer per target
+./build/debug/heapviz ./build/debug/churn --threads 1 --seconds 5   # positional launch
+./build/debug/heapviz $(pgrep -n churn)              # positional attach; one consumer per target
+./build/debug/heapviz -- ./build/debug/churn --seconds 5   # explicit forms, still supported
+./build/debug/heapviz --pid $(pgrep -n churn)
+./build/debug/heapviz --instrument ./some_tui         # terminal 1: exec the target itself
 ./build/debug/heapviz --version                      # pinned by the tui_version test
 ./build/debug/heapviz --term-check                   # drive M3 and M4 against a real terminal
 ./build/debug/heapviz --term-check --debug-timing    # per-phase frame budget overlay
@@ -86,13 +89,55 @@ shows a real heap. Six commands: `--version` (`-V`), `--help` (`-h`),
 COLORTERM= TERM=linux ./build/debug/heapviz --term-check   # 16-colour fallback
 ```
 
-Only `argv[1]` selects the command, while the modifiers are scanned across the
-whole argv so either order works — except that the scan stops at `--`, since
-everything after it belongs to the target. Anything else in `argv[1]` prints "not
-implemented yet" and exits 2, which is what makes the unimplemented flags
-distinguishable from the working ones — with one exception: `--no-unicode` alone
-in `argv[1]` prints the usage and exits 0, since a modifier on its own is not a
-command.
+**A bare argument is dispatched by its shape, and the shape is the whole rule.**
+Digits only, and greater than zero, is an attach; anything else starts a command
+and the rest of argv belongs to that command. An argument beginning with `-` that
+matched nothing above is an unknown option and exits 2 — the old "not implemented
+yet" catch-all is gone, because a positional command is now a legal thing to find
+there. That leaves one collision worth knowing about: a program whose name is
+digits cannot be launched positionally, which is what `--` is still for.
+Modifiers are scanned across the whole argv so either order works, but the scan
+stops at `--`, at `--instrument`, and at a positional command, since everything
+after each of those belongs to the target. `--no-unicode` alone prints the usage
+and exits 0, since a modifier on its own is not a command.
+
+`tests/cmake/tui_short_forms.cmake` pins the dispatch by the error each form
+reaches. It needs no pty because all three of its cases fail before terminal
+setup, which is the only reason a CLI rule this central can be held by a CTest
+script rather than by hand.
+
+**A launched target does not share the terminal.** heapviz owns it for the
+framebuffer, so `launch_target(..., TargetIo::Isolate)` gives the child
+`/dev/null` on stdin and a private `/tmp/heapviz-target-<pid>.log` on stdout and
+stderr, and `main` prints that path. Without it a target that writes to stdout
+paints over the map, and a target that reads stdin competes for the keybindings.
+The default is `TargetIo::Inherit` because `attach_test` and any other caller
+that already owns its descriptors should keep them.
+
+Two consequences of owning the child that are easy to get wrong. First, the
+target's log is the only record of *why* it exited, so `HeapApp::set_launch` is
+given the log path and argv0 at startup and `build_exit_note` composes one
+sentence on the transition to `Exited` — the `--instrument` command when the
+target died inside `kInteractiveExitMs`, its own last line otherwise. It belongs
+on the footer and not only in the exit summary, because a reason behind a keypress
+is a reason nobody reads: the report that started this was a user watching a
+frozen map with no way to know there was anything to press. `hv::last_output_line`
+is the one copy of the parsing, and it consumes whole CSI sequences rather than
+bare ESC bytes — dropping ESC alone stops the sequence being obeyed but leaves
+`[2J[H` in the middle of the sentence. Second, **heapviz is
+the parent, so it must reap before it tests liveness.** `process_alive` is
+`kill(pid, 0)`, which *succeeds* on an unreaped zombie, so `HeapApp::update` calls
+`reap_if_exited` first; with the two in the other order a launched target that
+skipped its destructors stayed Live forever. `attach_test`'s
+`test_a_killed_target_is_noticed` is the guard, and it uses SIGKILL because a
+target that exits cleanly sets `producer_exited` and never reaches the pid check
+— which is why the older exit assertions held while this was broken.
+
+That isolation is also why `--instrument` exists. An interactive target is
+unusable with its stdin closed, so instead of forking it, heapviz `execvp`s it in
+place with `LD_PRELOAD` and `HEAPVIZ_WAIT_MS` set, keeping all three descriptors,
+and prints the pid to attach to from a second terminal. `exec_instrumented_target`
+returns only on failure, and only an errno.
 
 `--term-check` is the manual counterpart to the pty tests: it is the only way to
 judge whether a resize *looked* right. `a` toggles animation so the idle path's
@@ -123,7 +168,7 @@ budget, and the per-cell colour interpolation alone spends most of the frame's
 1 ms. Both binaries still build everywhere, so they can be run by hand in debug
 to read the numbers.
 
-Expected test counts when everything passes: debug 30, release 32, asan 27.
+Expected test counts when everything passes: debug 33, release 35, asan 30.
 
 `attach` is preload-driven, so it is skipped under ASan with the rest of them.
 It launches three `churn` processes over its run, each of which creates a 32 MiB
@@ -222,7 +267,8 @@ attributed. Release it with `hv_ring_release` on a clean exit;
 pid is gone first, because `heapviz_ring.h` is a shared header that cannot make
 syscalls.
 
-`heapviz -- ./a.out` has one failure the attach cannot diagnose on its own. It
+The launch path — `heapviz ./a.out` or `heapviz -- ./a.out` — has one failure the
+attach cannot diagnose on its own. It
 forks and execs with `LD_PRELOAD` injected, and if the exec fails there is no
 target, no segment, and nothing to attach to — so the attach times out and
 reports "target is not running libheapviz.so", which is a confident and
@@ -440,9 +486,11 @@ There are two `LoopApp`s and they share one keymap only in part. Both route
 cursor keys through `cursor_move_for_key`, so `hjkl`, `HJKL`, `g`/`G` and
 `n`/`N` behave identically in each — a binding added there lands in both, which
 is the point of it being a free function. Beyond that they diverge:
-`TermCheckApp` has `a` and `t`, and `HeapApp` has `Tab`, which cycles the chunks
-sharing the cursor's cell (a cell is a span of addresses and usually holds
-several, so without it the inspector could only ever name the largest).
+`TermCheckApp` has `a` and `t`, and `HeapApp` has `Tab`, `Space`, `?`, `r` and
+M5.5's `s`/`S`/`d`. `Tab` cycles the chunks sharing the cursor's cell (a cell is
+a span of addresses and usually holds several, so without it the inspector could
+only ever name the largest); `s` marks a snapshot, `d` diffs against it and `S`
+drops it, and `d` before `s` is deliberately inert rather than an error.
 `HeapApp::key` takes `q` first and unconditionally, because the cursor bindings
 are vim's and vim has no `q` — a future mode that binds it would otherwise take
 the one key the loop has no opinion about, and a heapviz that cannot be quit is

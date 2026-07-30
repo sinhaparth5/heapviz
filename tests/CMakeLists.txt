@@ -161,6 +161,16 @@ target_link_libraries(snapshot_test PRIVATE heapviz_core)
 add_test(NAME snapshot COMMAND snapshot_test)
 set_tests_properties(snapshot PROPERTIES TIMEOUT 60)
 
+# --- Walking an uninstrumented target's heap from outside (M2.5) -----------
+# The reader is injected, so this needs no target process: the interesting
+# inputs are torn headers and arena prefixes, which a live target cannot be
+# asked to produce on demand.
+add_executable(heap_walker_test unit/heap_walker_test.cpp)
+heapviz_test_target(heap_walker_test)
+target_link_libraries(heap_walker_test PRIVATE heapviz_core)
+add_test(NAME heap_walker COMMAND heap_walker_test)
+set_tests_properties(heap_walker PROPERTIES TIMEOUT 60)
+
 # --- Capability detection, quantisers and fallback (M4.4) ------------------
 # Detection takes the environment strings as arguments rather than reading
 # them, so this needs no setenv and cannot disturb the tests around it.
@@ -327,3 +337,10 @@ endif()
 add_test(NAME tui_version COMMAND heapviz_tui --version)
 set_tests_properties(tui_version PROPERTIES
   PASS_REGULAR_EXPRESSION "ABI v3, 32-byte events, 256-byte ring header")
+
+# Positional CLI forms stop before terminal setup in these failure cases, which
+# lets CTest hold the dispatch rule without needing a pty.
+add_test(NAME tui_short_forms
+  COMMAND ${CMAKE_COMMAND}
+          -DHEAPVIZ=$<TARGET_FILE:heapviz_tui>
+          -P ${HEAPVIZ_TEST_CMAKE}/tui_short_forms.cmake)
