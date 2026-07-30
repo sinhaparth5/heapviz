@@ -154,6 +154,30 @@ void test_the_peak_is_per_frame_not_per_event() {
           "peak: only what the live set held when a frame looked");
 }
 
+void test_reset_starts_a_new_measurement_window() {
+    hv::Metrics m;
+    m.on_alloc(8192);
+    m.on_alloc(4096);
+    m.sample(sample_of(12, 6144, 7, 1024, 3, 250));
+
+    m.reset(sample_of(12, 6144, 7, 1024, 0, 300));
+    check(m.total_bytes() == 0 && m.total_allocs() == 0,
+          "reset: cumulative allocation traffic starts over");
+    check(m.live_chunks() == 12 && m.live_bytes() == 6144,
+          "reset: the current live set is preserved");
+    check(m.peak_bytes() == 6144 && m.peak_ms() == 300,
+          "reset: the current live bytes become the new peak baseline");
+    check(m.dropped() == 0,
+          "reset: the supplied drop baseline starts a fresh window");
+
+    m.on_alloc(512);
+    m.sample(sample_of(13, 6656, 0, 1024, 1, 350));
+    check(m.total_bytes() == 512 && m.total_allocs() == 1,
+          "reset: later allocations belong to the new window");
+    check(m.peak_bytes() == 6656 && m.peak_ms() == 350,
+          "reset: the new peak can rise normally");
+}
+
 void test_an_idle_frame_reports_no_change() {
     hv::Metrics m;
     const hv::MetricsSample s = sample_of(100, 65536, 1000, 1u << 20, 0, 1000);
@@ -527,6 +551,7 @@ int main() {
     test_the_total_saturates();
     test_the_peak_is_a_high_water_mark();
     test_the_peak_is_per_frame_not_per_event();
+    test_reset_starts_a_new_measurement_window();
     test_an_idle_frame_reports_no_change();
     test_the_ring_percentage();
     test_the_ring_pressure_thresholds();

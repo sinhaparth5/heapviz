@@ -189,6 +189,24 @@ promise about the ABI or the CLI surface.
   a zero that would read as "no holes at all"; the percentage stays exact at any
   size. For reference, `examples/churn` measures 23% while churning steadily and
   51–63% in its fragmenting mode.
+- Snapshots and leak hunting. Press `s` to mark the current instant, and `d` to
+  light up everything still alive that was allocated after it — the leak
+  candidates. Those cells turn magenta on the map, and the header says how many
+  chunks and how many bytes they are, and what time you took the mark. `S` drops
+  the mark again. The map keeps its density glyphs while highlighted, so you can
+  still see how much is in each cell and not only that something is. Note these
+  are candidates and not leaks: a program is entitled to hold onto memory, and
+  what the mode does is narrow where you look. An address that was in use when
+  you pressed `s`, was freed, and was handed back out afterwards counts as a
+  candidate — the block being held now is not the one that was held then, and
+  those are the addresses an allocator reuses most. `d` does nothing until you
+  have taken a snapshot, and the footer only offers it once you have.
+- Interactive session controls: `Space` freezes the display and model while
+  continuing to drain telemetry into an ordered staging queue, then replays it
+  on resume without reordering allocations and frees. `?` opens a keyboard-help
+  overlay, and `r` starts fresh allocation, peak, drop, and frame-diagnostic
+  windows without throwing away the current live heap. The footer changes with
+  pause, help, diff, exited, and detached modes so it only offers active keys.
 - heapviz can now read a target's memory map, which is what tells it where the
   heap actually is rather than inferring bounds from the addresses it happens
   to have seen. It distinguishes the main `[heap]` from thread arenas and from

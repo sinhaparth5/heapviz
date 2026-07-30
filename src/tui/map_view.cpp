@@ -229,6 +229,41 @@ void MapView::draw(Framebuffer &fb, Rect area, const HeatMap &map,
     }
 }
 
+void MapView::draw_leaks(Framebuffer &fb, Rect area, const HeatMap &map,
+                         const SnapshotDiff &diff) const noexcept {
+    if (!diff.diff_mode()) return;
+
+    const MapLayout l = map_layout(area);
+    if (!l.valid) return;
+
+    const Grid &g = map.grid();
+    if (!g.valid()) return;
+
+    /* The overlay is indexed by cell, so an overlay sized for a different grid
+     * indexes a different heap. Refusing to draw is the only safe answer: the
+     * alternative highlights whatever cells those indices happen to name now,
+     * which is M3.1's gutter bug wearing a different colour. The next pass
+     * re-sizes it, and `HeapApp` forces one on any geometry change. */
+    if (diff.cell_span() != map.cell_count()) return;
+
+    for (const std::uint32_t cell : diff.hot_cells()) {
+        const auto i = static_cast<std::size_t>(cell);
+        if (i >= map.cell_count()) continue;
+
+        const int row = g.row_of(i);
+        const int col = g.col_of(i);
+        if (row >= l.cells.h || col >= l.cells.w) continue; /* clipped map */
+
+        const int x = l.cells.x + col;
+        const int y = l.cells.y + row;
+        if (!fb.contains(x, y)) continue;
+
+        Cell c = fb.at_back(x, y);
+        c.fg = style_.leak;
+        fb.put(x, y, c);
+    }
+}
+
 void MapView::draw_cursor(Framebuffer &fb, Rect area, const HeatMap &map,
                           const MapCursor &cur) const noexcept {
     const MapLayout l = map_layout(area);

@@ -65,6 +65,7 @@ unsigned LoopApp::drain() { return 0; }
 bool     LoopApp::update(std::uint64_t) { return false; }
 bool     LoopApp::key(char) { return false; }
 bool     LoopApp::animating() const { return false; }
+bool     LoopApp::take_stats_reset() { return false; }
 void     LoopApp::resized(int, int) {}
 
 /* ------------------------------------------------------------------ */
@@ -166,6 +167,16 @@ LoopExit EventLoop::run(LoopApp &app) {
         const std::uint64_t deadline    = frame_start + period_ns_;
 
         if (quit_requested()) return LoopExit::Quit;
+
+        /* `[r]` resets the diagnostics at a frame boundary. Doing it here keeps
+         * every counter in the new window self-consistent: the frame below is
+         * either wholly before the reset or wholly after it. */
+        if (app.take_stats_reset()) {
+            stats_            = LoopStats{};
+            fps_mark_ns_      = frame_start;
+            fps_mark_drawn_   = 0;
+            dirty             = true;
+        }
 
         /* Checked before the increment, so the count reflects frames that ran
          * rather than including the one that noticed the limit. */

@@ -158,11 +158,12 @@ roadmap.
 | `n` `N` | Jump to next / previous non-empty cell | working |
 | `g` `G` | Jump to heap start / end | working |
 | `Tab` | Cycle chunks within the selected cell | working |
-| `Space` | Pause the display | planned |
-| `s` | Take a snapshot | planned |
-| `d` | Toggle leak diff against the snapshot | planned |
-| `r` | Reset statistics | planned |
-| `?` | Help | planned |
+| `Space` | Pause the display while continuing to drain telemetry | working |
+| `s` | Take a snapshot | working |
+| `d` | Toggle leak diff against the snapshot | working |
+| `S` | Clear the snapshot | working |
+| `r` | Reset statistics | working |
+| `?` | Help | working |
 | `q` | Quit | working |
 
 Horizontal movement runs along the address space rather than stopping at the
@@ -196,12 +197,13 @@ and `heapviz --pid N` both attach to a real process and draw its heap. The
 terminal engine underneath is raw mode, a double-buffered grid, a differential
 renderer that puts one write on the wire per frame, and a paced event loop that
 handles resizing and idles at close to no CPU. Above that sit the spatial map,
-a movable cursor, a chunk inspector, a telemetry metrics panel, and live
-fragmentation analysis with the largest free hole beside it.
+a movable cursor, a chunk inspector, a telemetry metrics panel, live
+fragmentation analysis with the largest free hole beside it, and snapshot-based
+leak hunting.
 
-Not there yet: snapshots and leak diffing, pausing, and the visual polish the
-mockup above shows. `heapviz --term-check` exercises the terminal layer and the
-map against a synthetic heap without needing a target.
+Not there yet: the visual polish the mockup above shows. `heapviz --term-check`
+exercises the terminal layer and the map against a synthetic heap without
+needing a target.
 
 [**ROADMAP.md**](ROADMAP.md) tracks 212 tasks across 8 milestones, from the
 shared-memory ABI through the interceptor, sparse grid, ANSI engine,

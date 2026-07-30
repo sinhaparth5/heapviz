@@ -75,6 +75,14 @@ void Metrics::on_alloc(std::uint64_t usable) noexcept {
     if (total_allocs_ != UINT64_MAX) ++total_allocs_;
 }
 
+void Metrics::reset(const MetricsSample &baseline) noexcept {
+    live_         = baseline;
+    total_bytes_  = 0;
+    total_allocs_ = 0;
+    peak_bytes_   = baseline.live_bytes;
+    peak_ms_      = baseline.now_ms;
+}
+
 bool Metrics::sample(const MetricsSample &s) noexcept {
     bool changed = false;
 

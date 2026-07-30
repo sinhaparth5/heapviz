@@ -67,6 +67,7 @@ ssize_t failing_write(int, const void *, std::size_t) {
 class TestApp : public hv::LoopApp {
 public:
     bool animate = false;
+    bool reset_pending = false;
 
     unsigned drains  = 0;
     unsigned updates = 0;
@@ -81,6 +82,12 @@ public:
     bool update(std::uint64_t) override { ++updates; return false; }
 
     bool animating() const override { return animate; }
+
+    bool take_stats_reset() override {
+        const bool reset = reset_pending;
+        reset_pending = false;
+        return reset;
+    }
 
     void resized(int w, int h) override {
         resized_w = w;
@@ -397,6 +404,38 @@ void test_timing_attributes_a_slow_draw() {
     check(s.overruns == 4, "timing: every frame was counted as an overrun");
 }
 
+void test_stats_reset_starts_a_new_loop_window() {
+    check(!hv::quit_requested(), "ordering: the quit flag is still clear");
+
+    class ResettingApp final : public TestApp {
+    public:
+        unsigned drain() override {
+            ++drains;
+            return 2;
+        }
+
+        bool update(std::uint64_t now) override {
+            TestApp::update(now);
+            if (updates == 3) reset_pending = true;
+            return false;
+        }
+    };
+
+    QuietPipe pipe;
+    ResettingApp app;
+    hv::EventLoop loop(base_config(pipe.rd, 500, 4));
+    loop.run(app);
+
+    const hv::LoopStats &s = loop.stats();
+    check(app.updates == 7,
+          "reset: the frame limit became relative to the new window");
+    check(s.frames == 4 && s.drawn == 4,
+          "reset: frame and draw counters contain only the new window");
+    check(s.events == 8,
+          "reset: drained-event diagnostics contain only the new window");
+    check(!app.reset_pending, "reset: the request was consumed once");
+}
+
 /* Keys reach the app, and `q` exits through the same flag the signal handlers
  * set. Runs last: request_quit() is process-global and one-way. */
 void test_keys_reach_the_app_and_q_quits() {
@@ -431,6 +470,7 @@ int main() {
     test_refuses_a_terminal_that_is_too_small();
     test_write_failure_ends_the_loop();
     test_timing_attributes_a_slow_draw();
+    test_stats_reset_starts_a_new_loop_window();
 
     /* Last: sets the process-global quit flag, which nothing clears. */
     test_keys_reach_the_app_and_q_quits();

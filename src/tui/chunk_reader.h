@@ -45,6 +45,9 @@
 #include <cstdint>
 #include <vector>
 
+#include <sys/types.h>
+#include <sys/uio.h>
+
 namespace hv {
 
 /* glibc keeps three flags in the low bits of the chunk size, which is free
@@ -124,7 +127,15 @@ bool decode_chunk(const RawChunkHeader &raw, std::uint64_t user_ptr,
 
 class ChunkReader {
 public:
-    explicit ChunkReader(int pid) noexcept : pid_(pid) {}
+    /* Same signature as process_vm_readv. Tests inject a failure at this one
+     * boundary so EFAULT, ESRCH and EPERM remain independently covered even
+     * when the test runner itself is under ptrace (which makes the real syscall
+     * return EPERM before it examines the pid or remote vectors). */
+    using ReadFn = ssize_t (*)(pid_t, const iovec *, unsigned long,
+                               const iovec *, unsigned long, unsigned long);
+
+    explicit ChunkReader(int pid, ReadFn read_fn = nullptr) noexcept
+        : pid_(pid), read_fn_(read_fn) {}
 
     int pid() const noexcept { return pid_; }
 
@@ -155,6 +166,7 @@ public:
 
 private:
     int  pid_;
+    ReadFn read_fn_ = nullptr;
     bool denied_ = false;
     bool gone_   = false;
 

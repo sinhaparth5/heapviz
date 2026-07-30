@@ -163,6 +163,12 @@ public:
      * costs nothing to have. */
     bool sample(const MetricsSample &s) noexcept;
 
+    /* Starts a new measurement window without changing the heap being watched.
+     * Cumulative allocation traffic returns to zero, while the current live set
+     * becomes the new peak baseline: resetting must not claim that a process
+     * already holding memory peaked at zero. */
+    void reset(const MetricsSample &baseline) noexcept;
+
     /* M5.4's analysis tick. Until it runs the panel says the figure is not
      * known rather than showing 0%, which would be a specific and wrong claim
      * about a heap nobody has walked. */

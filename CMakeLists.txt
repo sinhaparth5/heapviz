@@ -85,6 +85,7 @@ add_library(heapviz_core STATIC
   src/tui/inspector.cpp
   src/tui/metrics.cpp
   src/tui/fragmentation.cpp
+  src/tui/snapshot.cpp
   src/tui/demo_heap.cpp
   src/tui/renderer.cpp
   src/tui/event_loop.cpp

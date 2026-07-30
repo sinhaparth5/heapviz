@@ -21,11 +21,11 @@ this document is the record; nothing below should send a reader looking for it.
 | M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[x]` | 20 / 20 |
 | M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[x]` | 34 / 34 |
-| M5 | Interactivity & analysis | cursor, frag, snapshots | `[~]` | 24 / 33 |
+| M5 | Interactivity & analysis | cursor, frag, snapshots | `[x]` | 32 / 33 (1 cut) |
 | M6 | Visual polish | the *beautiful* part | `[ ]` | 0 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 159 / 212**
+**Total: 167 / 212**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -1511,24 +1511,99 @@ Not in `--term-check`, for the same reason M5.2's and M5.3's panels are not.
 
 ### M5.5 Snapshot & leak detection
 
-- [ ] `[s]` snapshot: record the set of live pointers + a timestamp.
-- [ ] `[d]` diff mode: highlight allocations made after the snapshot that are
+- [x] `[s]` snapshot: record the set of live pointers + a timestamp. The
+      timestamp alone, in the event: `Chunk::alloc_ms` already answers the
+      question the pointer set was for, and answers it better -- see below.
+- [x] `[d]` diff mode: highlight allocations made after the snapshot that are
       still live. These are leak candidates.
-- [ ] Diff-mode cells use a distinct colour (magenta) so the mode is
+- [x] Diff-mode cells use a distinct colour (magenta) so the mode is
       unmistakable, plus a banner in the header.
-- [ ] `[S]` clears the snapshot.
-- [ ] Snapshot summary line: `N chunks / M bytes leaked since <time>`.
-- [ ] Bounded snapshot memory; refuse (with a message) rather than OOM on a
-      target with tens of millions of live chunks.
+- [x] `[S]` clears the snapshot.
+- [x] Snapshot summary line: `N chunks / M bytes leaked since <time>`. On the
+      title row rather than a row of its own, because a fourth header row would
+      move the map and re-bucket the address space on a keypress.
+- [-] Bounded snapshot memory; refuse (with a message) rather than OOM on a
+      target with tens of millions of live chunks. **Cut.** The bound it was
+      guarding does not exist once the snapshot is a `uint32_t`: there is no
+      per-pointer storage to cap, nothing to refuse, and a target with fifty
+      million live chunks marks as cheaply as one with three. What memory the
+      feature does use is the per-cell overlay, which is bounded by the grid
+      (ten thousand cells on a large terminal) and not by the live set. Revisit
+      only if something here ever needs per-chunk state again.
+
+**The snapshot is a timestamp, and the pointer set was the wrong tool.** The
+obvious implementation records every live pointer at the mark and tests
+membership per chunk. `ChunkTable` already holds the answer: `alloc_ms` is when
+the record was created, so `alloc_ms >= taken_ms` *is* "allocated since the
+mark", for one comparison and no memory.
+
+It is also the version that is right about address recycling, which is the case
+the pointer set gets backwards. An address that was live at the mark, was freed,
+and was handed back out afterwards is memory the program is holding that it was
+not holding before -- a candidate. It is also in the recorded set, so a
+membership test excludes it, and the addresses excluded that way are not a
+random sample: they are the ones the allocator reuses most, which on a churning
+target is most of the heap. `insert_live` overwrites the record and its
+`alloc_ms` with it, so the comparison gets that case right without knowing it
+exists. `snapshot_test` pins it, because it is the one behaviour a reasonable
+rewrite would undo.
+
+**Candidates, not leaks.** A program is entitled to allocate and hold, and
+nothing here can tell a cache from a leak. What the mode narrows is the search:
+everything still live that was not live when you pressed `s`.
+
+**The pass is on the 4 Hz tick and the overlay is per-cell.** Deciding whether
+one chunk qualifies is a comparison; finding them all is a linear walk of the
+chunk table, which is `FragAnalyzer`'s cost and gets `FragAnalyzer`'s treatment.
+What the walk produces is a count per cell rather than a list of pointers, so the
+thing the map is painted from is bounded by the grid. Two consequences fall out:
+the draw can repaint from it every frame while the analysis runs at a fifteenth
+of the rate, and the draw walks a list of the occupied cells rather than testing
+all ten thousand -- diff mode is off in almost every session and a per-cell
+branch in the map loop would be paid in all of them.
+
+**A pass that changed nothing must say so, and the summary cannot tell.** One
+candidate freed and another of the same size allocated elsewhere inside a tick
+leaves `chunks` and `bytes` identical and the map wrong. A frame reported as
+unchanged is a frame the loop does not draw (M4.5), so the overlay would keep the
+old highlight until something else moved. `analyze` therefore digests the cell
+array and compares that too.
+
+**Off costs one branch.** With diff mode off the pass returns before touching the
+chunk table, and `[d]` before `[s]` is inert rather than implicitly marking:
+a display toggle that silently moved the reference point would answer "what has
+leaked" with "nothing yet", which is true of every heap a millisecond after you
+start watching it. The footer offers `s snap` until there is a mark and `d diff`
+only once there is one, so the key that does nothing is also the key that is not
+advertised -- M5.6's footer rule, arriving early because this is where the first
+conditional binding appeared.
+
+**After a ring overflow the figure is not a measurement.** A dropped `free`
+leaves a phantom live record, which is a leak candidate that was never
+allocated; a dropped `malloc` hides a real one. D5 says this is unrecoverable
+without re-reading the target's chunks, so the diff inherits it. The existing
+`N events DROPPED - display is incomplete` banner is the caveat, and it is
+deliberately louder than this one.
+
+Not in `--term-check`, for the same reason M5.2's, M5.3's and M5.4's panels are
+not: `DemoHeap` has no `ChunkTable` to walk.
 
 ### M5.6 Other controls
 
-- [ ] `[Space]` pause. Critical detail: pausing must freeze *rendering and
+- [x] `[Space]` pause. Critical detail: pausing must freeze *rendering and
       model updates*, but the consumer has to keep draining the ring. Stop
       draining and the target's ring fills and starts dropping events, so
       pausing would corrupt the data you resume into. Drain into a staging queue.
-- [ ] `[q]` quit, `[?]` help overlay, `[r]` reset stats.
-- [ ] Footer control bar always reflects the current mode's real bindings.
+- [x] `[q]` quit, `[?]` help overlay, `[r]` reset stats.
+- [x] Footer control bar always reflects the current mode's real bindings.
+
+Pausing drains each frame into an ordered staging vector but returns no visible
+change to the event loop, so draw, model ticks, and heat aging stop. Resume
+replays that vector before reading newer ring entries, preserving allocation /
+free order. Reset starts new cumulative, peak, drop, and loop-diagnostic windows
+without discarding the current live heap. The integration test drives all three
+controls against a real preloaded target and verifies that paused traffic leaves
+the model unchanged until replay.
 
 ---
 

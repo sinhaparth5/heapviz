@@ -90,7 +90,9 @@ Only `argv[1]` selects the command, while the modifiers are scanned across the
 whole argv so either order works — except that the scan stops at `--`, since
 everything after it belongs to the target. Anything else in `argv[1]` prints "not
 implemented yet" and exits 2, which is what makes the unimplemented flags
-distinguishable from the working ones.
+distinguishable from the working ones — with one exception: `--no-unicode` alone
+in `argv[1]` prints the usage and exits 0, since a modifier on its own is not a
+command.
 
 `--term-check` is the manual counterpart to the pty tests: it is the only way to
 judge whether a resize *looked* right. `a` toggles animation so the idle path's
@@ -199,10 +201,16 @@ Consequences to respect when editing that file:
 
 ### Consumer attach
 
-`tests/support/ring_attach.h` is the reference implementation of the consumer
-side and mirrors what the TUI will do in M2.3: poll for the segment, map the
+`src/tui/session.cpp` is the shipped consumer and `tests/support/ring_attach.h`
+is the test-side twin of the same sequence: poll for the segment, map the
 header alone, check magic then ABI version, read `capacity`, map the whole
-ring, and claim it with `hv_ring_claim`. The claim is exclusive because `tail`
+ring, and claim it with `hv_ring_claim`. The order is the design, not a
+convention — reading `capacity` before the magic matches is reading a field
+that is not written yet, and the mapping length computed from it is garbage.
+`Session` differs from the test helper only in giving each failure a name the
+UI can print (`AttachStatus`), and in `kAttachTimeoutMs`: long enough for a
+target still running its own static initialisers, short enough that a wrong
+`--pid` is answered rather than waited on. The claim is exclusive because `tail`
 is a single cursor: two consumers would each advance it past events the other
 never saw, and both would display a plausible half of the stream. The producer publishes `magic` last with a release
 store, so a non-matching magic means the constructor is still running and the
@@ -213,6 +221,73 @@ attributed. Release it with `hv_ring_release` on a clean exit;
 `hv_ring_break_claim` force-clears one, and the caller must confirm the owning
 pid is gone first, because `heapviz_ring.h` is a shared header that cannot make
 syscalls.
+
+`heapviz -- ./a.out` has one failure the attach cannot diagnose on its own. It
+forks and execs with `LD_PRELOAD` injected, and if the exec fails there is no
+target, no segment, and nothing to attach to — so the attach times out and
+reports "target is not running libheapviz.so", which is a confident and
+completely wrong description of "command not found". The close-on-exec pipe in
+`launch_target` is how the parent learns which of the two happened.
+
+### From a pid to a coordinate space
+
+`--pid` and `--` walk four objects before the map sees anything, and each
+answers a question the next one assumes:
+
+| | Answers | |
+|---|---|---|
+| `Session` | is there a segment for this pid, is it this ABI, is it ours to read | `session.h` |
+| `MapsScanner` | what shape is the address space — which regions could an allocation land in | `proc_maps.h` |
+| `RegionMap` | where each region sits once they are laid end to end | `region_map.h` |
+| `ChunkReader` | what the target's own chunk header says: overhead, and chunks allocated before attach | `chunk_reader.h` |
+
+**The grid buckets flat offsets, not addresses.** A threaded target has a brk
+heap at `0x5b…` and a 64 MiB-aligned arena per allocating thread somewhere in
+`0x7f…`, and their union is about 23 TiB of which perhaps 40 MiB is memory: the
+`Grid` clamps to 1 GiB cells, `covers_whole_span` goes false, and the display is
+one occupied cell in a screenful of nothing. Picking a single region instead —
+which is what M2.3 shipped — shows a threaded target's main arena, reliably the
+empty one. So `RegionMap` packs the regions end to end in address order and
+`HeapApp::repack` hands `Grid` the range `[0, total_bytes)`, which makes the
+coordinate "how many heap bytes come before this one". Everything that shows a
+user a number — the gutter, the inspector, the header — converts back through
+`RegionMap::to_addr`. A place that forgets is the plausible-looking lie again,
+and this time it has no visual symptom.
+
+`MapsScanner` re-scans on a 500 ms timer, but the timer is not what keeps the
+display correct: a heap that grows mid-frame is noticed by `note_address` when
+an event lands outside the bounds, not by the tick that would have caught it
+400 ms later. Its parser is hand-rolled because the format is fixed by the
+kernel, and malformed lines are counted and skipped rather than failing the
+scan — `/proc/<pid>/maps` is a seq_file generated while the target runs, so a
+torn read must cost one region for 500 ms, never a blank display.
+
+`ChunkReader` is allowed to fail. `process_vm_readv` needs the same uid, and
+`ptrace_scope = 1` blocks it for a non-descendant even then, so `EPERM` is a
+supported mode rather than an error path: overhead reads unavailable and the
+session carries on with interceptor data. Reads are batched into one syscall
+because a per-chunk read is a syscall in a loop over the live set. It never
+calls `PTRACE_ATTACH`, which would stop the process being measured.
+
+`HeapApp` is the real `LoopApp`; `DemoHeap` behind `--term-check` is the
+synthetic one. They drive the same `Grid`/`HeatMap`/`MapView` and differ only in
+what feeds it, which is the point: if attaching to a real target had needed
+changes in `Grid` or `HeatMap`, one of them was holding an assumption about the
+synthetic heap. Three things are true only of the real one, and they explain
+code that otherwise reads as over-defensive:
+
+- **The heap moves.** New bounds are a new granularity, so they go through
+  `HeatMap::configure` + `rebuild`, never an incremental fold.
+- **The past is not observable.** heapviz attaches to a process that already has
+  a heap, so the first thing it sees may be a `free` of a chunk it never saw
+  allocated. Every counter one of those could decrement saturates.
+- **The target dies**, often mid-frame. The session freezes what it has rather
+  than clearing it: the last state of a heap that has just exited is the most
+  interesting frame of the session.
+
+The drain is capped at `kMaxEventsPerFrame`, because absorbing a full 1 Mi-slot
+ring in one frame at ~30 ns an event is a 30 ms stall, and a paced loop that
+misses its deadline by thirty frames is indistinguishable from a hung one.
 
 ### Segments outlive processes
 
@@ -233,12 +308,26 @@ lives:
 
 | | Owns | Costs |
 |---|---|---|
-| `Grid` | address → cell. `cell_bytes` = next power of two ≥ `span / (cols*rows)`, clamped to [64 B, 1 GiB], so the mapping is a shift | a shift |
+| `Grid` | coordinate → cell. `cell_bytes` = next power of two ≥ `span / (cols*rows)`, clamped to [64 B, 1 GiB], so the mapping is a shift | a shift |
 | `ChunkTable` | which allocations are live, by pointer. Robin Hood, Fibonacci hashing, bounded memory | 25 ns lookup |
 | `HeatMap` | per-cell aggregates, folded in incrementally | ~30 ns/event |
 | `HeatRamp` | (aggregate, now) → `Rgb`, in Oklab | 6.7 ns settled, 46 ns animating |
 | `MapView` | what fits on screen, and the glyphs | ~25 ns/cell |
 | `MapCursor` | which cell the user is pointing at, held as a *coordinate* so a resize reflows under it | one shift per query |
+
+The coordinate the `Grid` buckets is a packed offset under a real target and a
+plain address under `DemoHeap` — see "From a pid to a coordinate space". The
+optional `RegionMap` that decides which hangs off `HeatMap`
+(`set_regions`/`regions()`), and null there is not a degraded mode: with no
+`RegionMap` the address *is* the coordinate, which is what `DemoHeap` and every
+test written before M2.4 assume. `HeatMap::coordinate_of` converts on the way in
+and returns false for an address in a region not scanned yet, so it is dropped
+rather than landing in an unrelated cell; `MapView` reads the map back out
+through `map.regions()` to label the gutter, and `ChunkInspector` is handed it
+directly. The gutter labels an offset *within* the row's region rather than from
+the top of the map, and marks the seams, because an offset that runs across a
+seam between two arenas terabytes apart is arithmetically consistent and
+describes nothing.
 
 Three properties hold the whole thing together, and each has a test that fails
 when it is broken:
@@ -346,6 +435,28 @@ Four things there are easy to break by accident:
   `TermCheckApp::key` calls `hv::request_quit()`. A `LoopApp` that forgets it
   runs to `max_frames` and looks like a hung test rather than a missing
   keybinding.
+
+There are two `LoopApp`s and they share one keymap only in part. Both route
+cursor keys through `cursor_move_for_key`, so `hjkl`, `HJKL`, `g`/`G` and
+`n`/`N` behave identically in each — a binding added there lands in both, which
+is the point of it being a free function. Beyond that they diverge:
+`TermCheckApp` has `a` and `t`, and `HeapApp` has `Tab`, which cycles the chunks
+sharing the cursor's cell (a cell is a span of addresses and usually holds
+several, so without it the inspector could only ever name the largest).
+`HeapApp::key` takes `q` first and unconditionally, because the cursor bindings
+are vim's and vim has no `q` — a future mode that binds it would otherwise take
+the one key the loop has no opinion about, and a heapviz that cannot be quit is
+a terminal that has to be killed. A cursor move also refreshes the inspector
+immediately rather than on the next 4 Hz tick: the panel is the answer to the
+keypress, and a quarter-second lag reads as the tool being slow.
+
+`Space` is not allowed to stop the consumer. While the display is paused,
+`HeapApp::drain` removes events from the shared ring into `staged_` but reports
+no visible change; `update` and heat aging stop. Resume applies staged events
+before newer ring entries so an allocation/free pair cannot be reversed. `?`
+is modal, and `r` resets cumulative telemetry plus `EventLoop` diagnostics
+without clearing the live heap. Keep each mode's footer aligned with the keys
+that `HeapApp::key` will actually accept.
 
 ## Naming and layout
 

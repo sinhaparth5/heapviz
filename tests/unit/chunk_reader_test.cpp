@@ -10,10 +10,11 @@
  * confidently as truth.
  *
  * The other half reads real chunk headers with `process_vm_readv`, out of this
- * process. Reading ourselves is a real cross-process read as far as the kernel
- * is concerned -- same syscall, same permission check, same iovec plumbing --
- * and it needs no child, no preload and no ptrace configuration, so it belongs
- * in unit/ and runs everywhere the suite does.
+ * process. Reading ourselves uses the real syscall and iovec plumbing, while
+ * injected syscall failures cover its error classification. The injection is
+ * necessary under ptrace-supervised test runners: Linux returns EPERM before
+ * checking a nonexistent pid or unmapped remote address there, hiding the
+ * ESRCH and EFAULT branches the unit test needs to exercise.
  *
  * Everywhere except under a different allocator, which is why `ptmalloc_probe`
  * exists. ASan replaces malloc wholesale, so there are no ptmalloc headers to
@@ -23,6 +24,7 @@
 
 #include "tui/chunk_reader.h"
 
+#include <cerrno>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -37,6 +39,24 @@ int g_skipped  = 0;
 
 void check(bool ok, const char *what) {
     if (!ok) { std::fprintf(stderr, "  FAIL %s\n", what); ++g_failures; }
+}
+
+ssize_t fail_efault(pid_t, const iovec *, unsigned long, const iovec *,
+                    unsigned long, unsigned long) {
+    errno = EFAULT;
+    return -1;
+}
+
+ssize_t fail_esrch(pid_t, const iovec *, unsigned long, const iovec *,
+                   unsigned long, unsigned long) {
+    errno = ESRCH;
+    return -1;
+}
+
+ssize_t fail_eperm(pid_t, const iovec *, unsigned long, const iovec *,
+                   unsigned long, unsigned long) {
+    errno = EPERM;
+    return -1;
 }
 
 hv::RawChunkHeader hdr(std::uint64_t size, std::uint64_t flags = 0,
@@ -216,7 +236,11 @@ void test_reading_our_own_chunks() {
 }
 
 void test_unreadable_addresses_are_survivable() {
-    hv::ChunkReader r(static_cast<int>(::getpid()));
+    /* Inject EFAULT rather than relying on the host to reach remote-address
+     * validation. A ptrace-supervised test process receives EPERM first even
+     * when reading itself, which is valid production behavior but cannot cover
+     * this branch. */
+    hv::ChunkReader r(static_cast<int>(::getpid()), fail_efault);
 
     /* Addresses that are mapped in no process. The read fails, and the point is
      * that it fails per batch rather than taking the session with it. */
@@ -225,7 +249,7 @@ void test_unreadable_addresses_are_survivable() {
     hv::ChunkInfo       out[3];
 
     const hv::ReadStatus st = r.read(bad, want, 3, out);
-    check(st == hv::ReadStatus::Partial || st == hv::ReadStatus::Ok,
+    check(st == hv::ReadStatus::Partial,
           "unmapped: an unreadable batch is partial, not fatal");
     check(!out[0].valid && !out[1].valid && !out[2].valid,
           "unmapped: and nothing implausible was decoded from it");
@@ -234,15 +258,16 @@ void test_unreadable_addresses_are_survivable() {
      * not leave the previous batch's headers in the buffer to be decoded as
      * though they belonged to these addresses. */
     if (ptmalloc_probe()) {
+        hv::ChunkReader live(static_cast<int>(::getpid()));
         void *p = std::malloc(64);
         const std::uint64_t good = reinterpret_cast<std::uintptr_t>(p);
         const std::uint64_t g_want = 64;
         hv::ChunkInfo first;
-        r.read(&good, &g_want, 1, &first);
+        live.read(&good, &g_want, 1, &first);
         check(first.valid, "unmapped: a good read in between works");
 
         hv::ChunkInfo second[3];
-        r.read(bad, want, 3, second);
+        live.read(bad, want, 3, second);
         check(!second[0].valid && !second[1].valid && !second[2].valid,
               "unmapped: stale buffer contents are not decoded as chunks");
         std::free(p);
@@ -252,13 +277,15 @@ void test_unreadable_addresses_are_survivable() {
      * back, and must be skipped rather than underflowed. */
     const std::uint64_t low[] = {0, 8};
     hv::ChunkInfo       lout[2];
-    r.read(low, nullptr, 2, lout);
+    hv::ChunkReader low_reader(static_cast<int>(::getpid()), fail_efault);
+    low_reader.read(low, nullptr, 2, lout);
     check(!lout[0].valid && !lout[1].valid, "unmapped: a pointer at zero is skipped");
 }
 
 void test_a_dead_target_is_reported() {
-    /* No process has this pid: above every pid_max Linux permits. */
-    hv::ChunkReader r(0x7FFFFFFF);
+    /* ESRCH is injected because a ptrace supervisor can make the kernel return
+     * EPERM before it checks whether this otherwise-impossible pid exists. */
+    hv::ChunkReader r(0x7FFFFFFF, fail_esrch);
     const std::uint64_t ptr = 0x5000;
     hv::ChunkInfo info;
 
@@ -274,31 +301,23 @@ void test_a_dead_target_is_reported() {
 }
 
 void test_the_degraded_mode_is_reachable() {
-    /* pid 1 belongs to root, so an unprivileged process cannot read it. On a
-     * machine where this test runs as root it succeeds instead, and asserting
-     * either outcome specifically would be asserting who ran the suite -- so
-     * what is checked is that whichever happens, the reader ends in a coherent
-     * state and says so. */
-    hv::ChunkReader r(1);
+    /* Deterministic rather than depending on whether the suite runs as root,
+     * under Yama, or inside a container with a ptrace supervisor. */
+    hv::ChunkReader r(1, fail_eperm);
     const std::uint64_t ptr = 0x400000;
     hv::ChunkInfo info;
     const hv::ReadStatus st = r.read(&ptr, nullptr, 1, &info);
 
-    if (st == hv::ReadStatus::Denied) {
-        check(!r.available(), "denied: reading is marked unavailable");
-        check(r.hint() != nullptr, "denied: with a hint naming ptrace");
-        check(std::strstr(r.hint(), "ptrace") != nullptr,
-              "denied: that points at the cause, not at heapviz");
-        /* Latched for the same reason as death: a permission that is absent now
-         * cannot appear later in the session. */
-        check(r.read(&ptr, nullptr, 1, &info) == hv::ReadStatus::Denied,
-              "denied: and stays denied");
-        check(r.reads() == 1, "denied: without retrying the syscall");
-    } else {
-        std::printf("  denied: running privileged, skipped (got %s)\n",
-                    hv::read_status_str(st));
-        ++g_skipped;
-    }
+    check(st == hv::ReadStatus::Denied, "denied: EPERM is classified");
+    check(!r.available(), "denied: reading is marked unavailable");
+    check(r.hint() != nullptr, "denied: with a hint naming ptrace");
+    check(std::strstr(r.hint(), "ptrace") != nullptr,
+          "denied: that points at the cause, not at heapviz");
+    /* Latched for the same reason as death: a permission that is absent now
+     * cannot appear later in the session. */
+    check(r.read(&ptr, nullptr, 1, &info) == hv::ReadStatus::Denied,
+          "denied: and stays denied");
+    check(r.reads() == 1, "denied: without retrying the syscall");
 }
 
 } // namespace

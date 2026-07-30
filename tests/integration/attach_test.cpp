@@ -61,6 +61,27 @@ hv::LoopConfig loop_config(int in_fd, std::uint64_t frames) {
     return cfg;
 }
 
+std::string framebuffer_text(const hv::Framebuffer &fb) {
+    std::string out;
+    for (int y = 0; y < fb.height(); ++y) {
+        for (int x = 0; x < fb.width(); ++x) {
+            const char32_t glyph = fb.at_back(x, y).glyph;
+            out.push_back(glyph < 128 ? static_cast<char>(glyph) : '?');
+        }
+        out.push_back('\n');
+    }
+    return out;
+}
+
+std::string framebuffer_row(const hv::Framebuffer &fb, int y) {
+    std::string out;
+    for (int x = 0; x < fb.width(); ++x) {
+        const char32_t glyph = fb.at_back(x, y).glyph;
+        out.push_back(glyph < 128 ? static_cast<char>(glyph) : '?');
+    }
+    return out;
+}
+
 /* Launches churn with the arguments given and returns its pid, or -1. */
 int launch_churn(const std::vector<std::string> &args) {
     std::vector<char *> argv;
@@ -498,6 +519,95 @@ void test_a_second_consumer_is_refused() {
     wait_for(pid);
 }
 
+/* --- M5.6: pausing drains without moving the display --------------------- */
+
+void test_pause_help_and_reset_controls() {
+    const int pid = launch_churn({"--threads", "1", "--seconds", "2",
+                                  "--mode", "steady"});
+    if (pid <= 0) { check(false, "controls: churn launched"); return; }
+
+    hv::RingSession session;
+    if (session.attach(pid) != hv::AttachStatus::Ok) {
+        check(false, "controls: attached");
+        wait_for(pid);
+        return;
+    }
+
+    hv::HeapApp app(session, hv::Capabilities{});
+    app.resized(120, 40);
+
+    /* Establish a visible model before freezing it. */
+    for (int i = 0; i < 12 && app.events_seen() == 0; ++i) {
+        app.drain();
+        app.update(hv::monotonic_ns());
+        ::usleep(10000);
+    }
+    check(app.events_seen() != 0, "controls: the model saw traffic before pause");
+
+    const std::uint64_t events_before = app.events_seen();
+    const std::uint64_t live_before   = app.live_chunks();
+    check(app.key(' '), "controls: Space entered pause mode");
+    check(app.paused(), "controls: pause mode is observable");
+
+    ::usleep(100000);
+    bool all_invisible = true;
+    for (int i = 0; i < 8; ++i)
+        if (app.drain() != 0) all_invisible = false;
+
+    check(all_invisible,
+          "controls: draining while paused reports no visible model change");
+    check(app.staged_events() != 0,
+          "controls: paused traffic was removed into the staging queue");
+    check(app.events_seen() == events_before && app.live_chunks() == live_before,
+          "controls: paused traffic did not update counters or the live set");
+    check(!app.update(hv::monotonic_ns()),
+          "controls: clock-driven model updates are frozen too");
+
+    hv::Framebuffer fb;
+    fb.resize(120, 40);
+    app.draw(fb, hv::LoopStats{});
+    std::string footer = framebuffer_row(fb, fb.height() - 1);
+    check(footer.find("PAUSED") != std::string::npos &&
+              footer.find("Space resume") != std::string::npos,
+          "controls: the paused footer offers the binding that is active");
+
+    check(app.key('?') && app.help_visible(),
+          "controls: help opens over a paused display");
+    app.draw(fb, hv::LoopStats{});
+    const std::string help = framebuffer_text(fb);
+    check(help.find("KEYBOARD HELP") != std::string::npos,
+          "controls: the help overlay is actually drawn");
+    check(help.find("ring events are still being drained") != std::string::npos,
+          "controls: help explains the pause invariant");
+    footer = framebuffer_row(fb, fb.height() - 1);
+    check(footer.find("? close") != std::string::npos &&
+              footer.find("Space resume") != std::string::npos,
+          "controls: the help footer reflects paused help mode");
+    check(app.key('?') && !app.help_visible(), "controls: ? closes help");
+
+    check(app.key('r'), "controls: r reset the measurement window");
+    check(app.events_seen() == 0 && app.metrics().total_allocs() == 0,
+          "controls: event and allocation counters restarted");
+    check(app.metrics().peak_bytes() == app.live_bytes(),
+          "controls: the current live set became the new peak baseline");
+    check(app.take_stats_reset() && !app.take_stats_reset(),
+          "controls: the loop reset request is consumed exactly once");
+
+    check(app.key(' ') && !app.paused(), "controls: Space resumed the display");
+    app.draw(fb, hv::LoopStats{});
+    footer = framebuffer_row(fb, fb.height() - 1);
+    check(footer.find("Space pause") != std::string::npos &&
+              footer.find("Space resume") == std::string::npos,
+          "controls: the live footer switches back to the live binding");
+    for (int i = 0; i < 64 && app.staged_events() != 0; ++i) app.drain();
+    check(app.staged_events() == 0, "controls: resume replayed the whole queue");
+    check(app.events_seen() != 0,
+          "controls: replayed events entered the new measurement window");
+
+    session.detach();
+    wait_for(pid);
+}
+
 void test_attaching_to_nothing() {
     /* A live process with no interceptor in it: this one. The segment never
      * appears, and the timeout is the only thing that ends the wait. */
@@ -565,6 +675,7 @@ int main(int argc, char **argv) {
     test_the_map_sees_the_heap();
     test_a_threaded_target_shows_every_arena();
     test_overhead_is_corrected_from_real_headers();
+    test_pause_help_and_reset_controls();
     test_a_second_consumer_is_refused();
 
     if (g_failures != 0) {

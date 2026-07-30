@@ -47,6 +47,7 @@
 #include "tui/proc_maps.h"
 #include "tui/region_map.h"
 #include "tui/session.h"
+#include "tui/snapshot.h"
 
 #include <cstdint>
 #include <vector>
@@ -92,6 +93,7 @@ public:
     bool     update(std::uint64_t now_ns) override;
     bool     key(char byte) override;
     bool     animating() const override;
+    bool     take_stats_reset() override;
     void     resized(int w, int h) override;
     void     draw(Framebuffer &fb, const LoopStats &stats) override;
 
@@ -113,12 +115,20 @@ public:
     const ChunkInspector &inspector() const noexcept { return inspect_; }
     const Metrics     &metrics() const noexcept { return metrics_; }
     const FragAnalyzer &fragmentation() const noexcept { return frag_; }
+    const SnapshotDiff &snapshot() const noexcept { return snap_; }
     const Grid        &grid()   const noexcept { return grid_; }
     std::uint64_t refined_chunks() const noexcept { return refined_; }
     std::uint64_t exact_overhead() const noexcept { return exact_overhead_; }
+    bool paused() const noexcept { return paused_; }
+    bool help_visible() const noexcept { return help_visible_; }
+    std::size_t staged_events() const noexcept {
+        return staged_.size() - staged_head_;
+    }
 
 private:
     void apply(const HvEvent *events, std::uint32_t n) noexcept;
+    void reset_stats() noexcept;
+    void draw_help(Framebuffer &fb) const noexcept;
     std::uint32_t event_ms(std::uint64_t timestamp_ns) const noexcept;
     /* Repacks the regions and reports whether the layout moved. Replaces
      * M2.3's choose-one-region, which showed a threaded target's main arena --
@@ -159,8 +169,14 @@ private:
     ChunkInspector inspect_;
     Metrics        metrics_;
     FragAnalyzer   frag_;
+    SnapshotDiff   snap_;
 
     std::vector<HvEvent> batch_;
+    /* Events removed from the ring while the display is paused. `staged_head_`
+     * makes replay a cursor over contiguous storage rather than an O(n) erase
+     * per frame; the vector is cleared once the cursor reaches its end. */
+    std::vector<HvEvent> staged_;
+    std::size_t staged_head_ = 0;
 
     /* Reused by the enrichment pass, so correcting overhead allocates nothing
      * once the session is running. */
@@ -194,6 +210,9 @@ private:
     int          width_ = 0;
     int          height_ = 0;
     bool         geometry_dirty_ = true;
+    bool         paused_ = false;
+    bool         help_visible_ = false;
+    bool         reset_loop_stats_ = false;
 };
 
 } // namespace hv

@@ -24,6 +24,9 @@ constexpr Rgb kWarn  = 0x00F5A623;
 constexpr Rgb kBad   = 0x00E05252;
 constexpr Rgb kGood  = 0x0058C7F3;
 constexpr Rgb kPanel = 0x000C0C0C;
+/* M5.5's diff mode, and the same value as `MapStyle::leak` on purpose: the
+ * banner and the cells it describes have to be recognisably one thing. */
+constexpr Rgb kLeak  = 0x00E040FB;
 
 /* Three header rows and one status row, both fixed rather than sized to their
  * contents. A map whose top edge moved when a banner appeared would re-bucket
@@ -45,6 +48,7 @@ HeapApp::HeapApp(RingSession &session, Capabilities caps)
     : session_(session), caps_(caps), view_(caps),
       scanner_(session.pid()), reader_(session.pid()) {
     batch_.resize(kMaxEventsPerFrame); /* once; draining allocates nothing */
+    staged_.reserve(kMaxEventsPerFrame);
 
     /* The clock origin is attach time, not the producer's start time. Anchoring
      * to the producer would be more faithful, and would overflow the model's
@@ -76,10 +80,42 @@ std::uint32_t HeapApp::event_ms(std::uint64_t timestamp_ns) const noexcept {
 unsigned HeapApp::drain() {
     if (!session_.attached()) return 0;
 
-    const std::uint32_t n = session_.drain(batch_.data(), kMaxEventsPerFrame);
-    if (n != 0) apply(batch_.data(), n);
-    events_ += n;
-    return n;
+    if (paused_) {
+        const std::uint32_t n = session_.drain(batch_.data(), kMaxEventsPerFrame);
+        if (n != 0)
+            staged_.insert(staged_.end(), batch_.begin(),
+                           batch_.begin() + static_cast<std::ptrdiff_t>(n));
+        /* The event loop treats a non-zero return as a visible model change.
+         * The ring was drained, but the frozen model was not changed. */
+        return 0;
+    }
+
+    std::uint32_t applied = 0;
+
+    /* Replay before reading newer ring entries: an allocation and its later
+     * free must reach the model in the order the producer published them. */
+    const std::size_t waiting = staged_events();
+    if (waiting != 0) {
+        const std::size_t take =
+            std::min<std::size_t>(waiting, kMaxEventsPerFrame);
+        apply(staged_.data() + staged_head_, static_cast<std::uint32_t>(take));
+        staged_head_ += take;
+        applied = static_cast<std::uint32_t>(take);
+        if (staged_head_ == staged_.size()) {
+            staged_.clear();
+            staged_head_ = 0;
+        }
+    }
+
+    if (applied < kMaxEventsPerFrame && staged_.empty()) {
+        const std::uint32_t room = kMaxEventsPerFrame - applied;
+        const std::uint32_t n = session_.drain(batch_.data(), room);
+        if (n != 0) apply(batch_.data(), n);
+        applied += n;
+    }
+
+    events_ += applied;
+    return applied;
 }
 
 void HeapApp::apply(const HvEvent *events, std::uint32_t n) noexcept {
@@ -156,6 +192,11 @@ void HeapApp::apply(const HvEvent *events, std::uint32_t n) noexcept {
 }
 
 bool HeapApp::update(std::uint64_t now_ns) {
+    /* The ring still drains into `staged_`, but every clock-driven and model
+     * operation below is frozen. In particular now_ms_ does not advance, so
+     * allocation/free heat cannot visibly decay while paused. */
+    if (paused_) return false;
+
     now_ms_ = clamp_u32((now_ns - origin_ns_) / 1000000ull);
 
     bool changed = false;
@@ -198,6 +239,13 @@ bool HeapApp::update(std::uint64_t now_ns) {
         metrics_.set_largest_gap(frag_.largest_gap(), frag_.largest_gap_known());
         changed = true;
     }
+
+    /* M5.5's leak candidates, on the same 4 Hz tick and after the repack for
+     * the same reason. `changed` is passed as the force flag: a repack or a
+     * rebuild renumbers the cells, and an overlay indexed by the old numbering
+     * highlights a different part of the heap -- plausibly, and until the next
+     * tick. */
+    if (snap_.analyze(table_, map_, now_ms_, changed)) changed = true;
 
     /* After everything that could have moved the model, and told about it:
      * a repack or a rebuild renumbers the cells, so a selection cached against
@@ -357,6 +405,27 @@ bool HeapApp::key(char byte) {
      * quit is a terminal that has to be killed. */
     if (byte == 'q') { request_quit(); return false; }
 
+    if (byte == '?') {
+        help_visible_ = !help_visible_;
+        return true;
+    }
+
+    if (byte == ' ' && (state_ == SessionState::Live || paused_)) {
+        paused_ = !paused_;
+        help_visible_ = false;
+        return true;
+    }
+
+    if (byte == 'r' && state_ != SessionState::Detached) {
+        reset_stats();
+        return true;
+    }
+
+    /* A modal overlay and a frozen display have deliberately small, explicit
+     * key sets. If a key is not in their footer it cannot mutate state behind
+     * the mode and surprise the user when it closes. */
+    if (help_visible_ || paused_) return false;
+
     CursorMove m{};
     if (cursor_move_for_key(byte, m)) {
         if (!cursor_.move(map_, m)) return false;
@@ -371,11 +440,48 @@ bool HeapApp::key(char byte) {
      * addresses and usually holds several, so without this the panel could only
      * ever name the largest. */
     if (byte == '\t') return inspect_.cycle();
+
+    /* M5.5. `s` marks now, `S` drops the mark, `d` shows what has accumulated
+     * since it. All three only redraw; the pass itself runs from `update`,
+     * which is where the model lives.
+     *
+     * `d` before `s` is deliberately inert rather than implicitly marking:
+     * a display toggle that silently moves the reference point would answer
+     * "what has leaked" with "nothing, so far", which is true of every heap one
+     * millisecond after you start looking at it and is not what the key was
+     * pressed to find out. The footer offers `d` only once there is a mark. */
+    if (state_ == SessionState::Live) {
+        if (byte == 's') { snap_.take(now_ms_); return true; }
+        if (byte == 'S') { snap_.clear(); return true; }
+        if (byte == 'd') { snap_.toggle(); return snap_.has_snapshot(); }
+    }
     return false;
 }
 
 bool HeapApp::animating() const {
-    return MapView::animating(map_, now_ms_);
+    return !paused_ && MapView::animating(map_, now_ms_);
+}
+
+bool HeapApp::take_stats_reset() {
+    const bool requested = reset_loop_stats_;
+    reset_loop_stats_ = false;
+    return requested;
+}
+
+void HeapApp::reset_stats() noexcept {
+    events_ = 0;
+    frees_unknown_ = 0;
+    dropped_at_attach_ = session_.dropped();
+
+    MetricsSample baseline{};
+    baseline.live_chunks   = live_;
+    baseline.live_bytes    = live_bytes_;
+    baseline.ring_queued   = session_.queued();
+    baseline.ring_capacity = session_.capacity();
+    baseline.dropped       = 0;
+    baseline.now_ms        = now_ms_;
+    metrics_.reset(baseline);
+    reset_loop_stats_ = true;
 }
 
 void HeapApp::resized(int w, int h) {
@@ -416,6 +522,39 @@ Rect HeapApp::metrics_area(int w, int h) const noexcept {
     return Rect{w - mw, h - kFooterRows - kMetricsRows, mw, kMetricsRows};
 }
 
+void HeapApp::draw_help(Framebuffer &fb) const noexcept {
+    const int box_w = std::min(68, std::max(4, fb.width() - 4));
+    const int box_h = std::min(17, std::max(3, fb.height() - 4));
+    const Rect box{(fb.width() - box_w) / 2, (fb.height() - box_h) / 2,
+                   box_w, box_h};
+
+    fb.fill(box, Cell{U' ', kInk, kPanel, 0});
+    fb.box(box, BoxStyle::Rounded, kGood, kPanel);
+
+    int row = 1;
+    const auto line = [&](const char *text, Rgb colour = kInk,
+                          std::uint8_t attrs = kAttrNone) {
+        panel_text(fb, box, 2, row, text, colour, kPanel, attrs);
+        ++row;
+    };
+
+    line("KEYBOARD HELP", kGood, kAttrBold);
+    line("");
+    line("q          quit");
+    line("?          close this help");
+    line("Space      pause / resume (live target)");
+    line("r          reset counters, peaks, drops, and frame stats");
+    line("");
+    line("h j k l    move cursor       H J K L    move x10");
+    line("g / G      first / last cell");
+    line("n / N      next / previous occupied cell");
+    line("Tab        cycle chunks in the selected cell");
+    line("");
+    line("s          take snapshot     d          toggle diff");
+    line("S          clear snapshot");
+    if (paused_) line("Display paused; ring events are still being drained.", kWarn);
+}
+
 void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
     const int w = fb.width();
     const int h = fb.height();
@@ -434,6 +573,39 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
     std::snprintf(line, sizeof line, "%.0f fps ", stats.fps);
     const auto rlen = static_cast<int>(std::strlen(line));
     if (w > rlen) fb.text(w - rlen, 0, line, kDim, kPanel);
+
+    /* M5.5's banner, on the title row rather than on a row of its own.
+     *
+     * A fourth header row would move the map down, and the map's geometry
+     * decides how many bytes a cell covers: toggling diff mode would re-bucket
+     * the whole address space, so every cell would change meaning on a keypress
+     * and the thing the mode exists to point at would move while you looked at
+     * it. The banner therefore has to fit in the rows that are already there.
+     *
+     * The figures are the whole live set's, not the map's -- `offmap` is
+     * reported separately below rather than being quietly dropped, because a
+     * summary saying 900 over a map highlighting 850 needs a number to explain
+     * it, not a discrepancy for the user to find. */
+    if (snap_.diff_mode()) {
+        const LeakReport &lr = snap_.report();
+        char count[24], bytes[32];
+        format_count(count, sizeof count, lr.chunks);
+        format_byte_size(bytes, sizeof bytes, lr.bytes);
+        if (lr.offmap != 0) {
+            char off[24];
+            format_count(off, sizeof off, lr.offmap);
+            std::snprintf(line, sizeof line,
+                          " [DIFF] %s chunks / %s leaked since %s (%s off map) ",
+                          count, bytes, snap_.taken_at(), off);
+        } else {
+            std::snprintf(line, sizeof line,
+                          " [DIFF] %s chunks / %s leaked since %s ", count, bytes,
+                          snap_.taken_at());
+        }
+        const auto blen = static_cast<int>(std::strlen(line));
+        if (w > rlen + blen) fb.text(w - rlen - blen, 0, line, kLeak, kPanel,
+                                     kAttrBold);
+    }
 
     /* Row 1: where the heap is, and which arenas it is coming from. */
     char arena[kArenaLabelMax];
@@ -512,6 +684,9 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
 
     const Rect area = map_area(w, h);
     view_.draw(fb, area, map_, now_ms_);
+    /* Before the cursor, so a candidate cell the cursor is sitting on still
+     * shows where the cursor is. */
+    view_.draw_leaks(fb, area, map_, snap_);
     view_.draw_cursor(fb, area, map_, cursor_);
 
     /* M5.2's panel, which is where the cursor's address now lives. It prints
@@ -534,22 +709,53 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
      * promise about its value -- and at -O3 that becomes a -Werror. */
     const char *note = " q quit";
     Rgb colour = kDim;
-    switch (state_) {
-    case SessionState::Live:
-        note = " q quit   hjkl move  HJKL x10  g/G ends  n/N next chunk   watching";
-        colour = kDim;
-        break;
-    case SessionState::Exited:
-        note = " q quit   hjkl move  n/N next chunk   "
-               "TARGET EXITED - showing its last state";
+    if (help_visible_) {
+        if (paused_)
+            note = " HELP   q quit   ? close   r reset   Space resume";
+        else if (state_ == SessionState::Live)
+            note = " HELP   q quit   ? close   r reset   Space pause";
+        else if (state_ == SessionState::Exited)
+            note = " HELP   q quit   ? close   r reset";
+        else
+            note = " HELP   q quit   ? close";
+        colour = kGood;
+    } else if (paused_) {
+        std::snprintf(line, sizeof line,
+                      " PAUSED   q quit   ? help   Space resume   r reset"
+                      "   %zu events staged",
+                      staged_events());
+        note = line;
         colour = kWarn;
-        break;
-    case SessionState::Detached:
-        note = " q quit    not attached";
-        colour = kDim;
-        break;
+    } else {
+        switch (state_) {
+        case SessionState::Live:
+            /* Conditional bindings only appear when they can act. In
+             * particular `d`/`S` require a mark and pause only exists while a
+             * producer is live. */
+            std::snprintf(line, sizeof line,
+                          " %s q quit  ? help  Space pause  r reset"
+                          "  hjkl/HJKL move  g/G ends  n/N chunk  s snap%s",
+                          snap_.diff_mode() ? "DIFF " : "",
+                          snap_.has_snapshot() ? "  d diff  S drop" : "");
+            note = line;
+            colour = snap_.diff_mode() ? kLeak : kDim;
+            break;
+        case SessionState::Exited:
+            note = " TARGET EXITED   q quit  ? help  r reset"
+                   "  hjkl/HJKL move  g/G ends  n/N chunk";
+            colour = kWarn;
+            break;
+        case SessionState::Detached:
+            note = " NOT ATTACHED   q quit  ? help";
+            colour = kDim;
+            break;
+        }
     }
     fb.text(0, h - 1, note, colour, kPanel);
+
+    /* Last, so the modal wins over every model layer while the footer remains
+     * visible and truthful about the keys that can close it. */
+    if (help_visible_) draw_help(fb);
 }
 
 } // namespace hv

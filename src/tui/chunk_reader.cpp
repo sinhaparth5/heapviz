@@ -130,9 +130,14 @@ ReadStatus ChunkReader::read(const std::uint64_t *ptrs,
 
         if (vectors == 0) { done += batch; continue; }
 
-        const ssize_t got = ::process_vm_readv(
-            static_cast<pid_t>(pid_), local, static_cast<unsigned long>(vectors),
-            remote, static_cast<unsigned long>(vectors), 0);
+        const ssize_t got =
+            read_fn_ != nullptr
+                ? read_fn_(static_cast<pid_t>(pid_), local,
+                           static_cast<unsigned long>(vectors), remote,
+                           static_cast<unsigned long>(vectors), 0)
+                : ::process_vm_readv(static_cast<pid_t>(pid_), local,
+                                     static_cast<unsigned long>(vectors), remote,
+                                     static_cast<unsigned long>(vectors), 0);
 
         ++reads_;
 

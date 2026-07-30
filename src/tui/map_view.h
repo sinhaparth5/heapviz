@@ -55,6 +55,7 @@
 #include "tui/grid.h"
 #include "tui/heat_color.h"
 #include "tui/heatmap.h"
+#include "tui/snapshot.h"
 
 #include <cstdint>
 
@@ -94,6 +95,12 @@ struct MapStyle {
     Rgb warn   = 0x00F5A623; /* accent, used for the truncation notice */
     Rgb bg     = 0x000C0C0C; /* canvas */
     Rgb cursor = 0x0033D7E8; /* M6.1's `cursor` token */
+
+    /* M5.5's diff mode. Magenta because it is the one hue the heat palette does
+     * not use: fresh green, freed red, settled blue, overhead yellow and empty
+     * grey are all spoken for, and an overlay in a colour the map already means
+     * something by would be read as a heat state rather than as a mode. */
+    Rgb leak   = 0x00E040FB;
 };
 
 class MapView {
@@ -129,6 +136,28 @@ public:
      * area, which a caller that has not refit after a resize can produce. */
     void draw_cursor(Framebuffer &fb, Rect area, const HeatMap &map,
                      const MapCursor &cur) const noexcept;
+
+    /* Repaints M5.5's leak candidates over a map already drawn into the same
+     * `area`, in `MapStyle::leak`.
+     *
+     * A third pass, for `draw_cursor`'s reason: the per-cell loop runs tens of
+     * thousands of times a frame against a 1 ms budget, and diff mode is off in
+     * almost every session. This walks the overlay's non-zero cells instead, so
+     * a map with forty leak candidates costs forty writes rather than ten
+     * thousand branches.
+     *
+     * The glyph is kept and only the foreground changes. Density is what the
+     * glyph encodes (see the header), and a mode that flattened every
+     * highlighted cell to one block would answer "where are the candidates"
+     * while destroying "how much is there" -- which is the next question anyone
+     * asks. It runs before `draw_cursor` so the cursor stays visible on a cell
+     * that is also a candidate.
+     *
+     * No-op when the grid is invalid, when diff mode is off, or when the
+     * overlay was computed against a different geometry -- the last of which a
+     * caller that has not re-analyzed after a resize can produce. */
+    void draw_leaks(Framebuffer &fb, Rect area, const HeatMap &map,
+                    const SnapshotDiff &diff) const noexcept;
 
     /* Which of the four density glyphs a cell earns. Public because it is half
      * of what the display encodes, and a test that only checked colour would

@@ -98,6 +98,11 @@ public:
      * arrived -- a blinking cursor, a decaying heatmap. */
     virtual bool animating() const;
 
+    /* Consumes an application request to start a fresh diagnostics window.
+     * Kept as a pull rather than exposing EventLoop to HeapApp, so test and
+     * alternate applications remain independent of the real session model. */
+    virtual bool take_stats_reset();
+
     /* The framebuffer has already been resized to w x h and the next frame is
      * already a full repaint; this is for model state that tracks geometry. */
     virtual void resized(int w, int h);
