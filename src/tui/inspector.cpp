@@ -225,15 +225,20 @@ void ChunkInspector::draw(Framebuffer &fb, Rect area, const Grid &g,
     const bool have = d.status != ChunkStatus::Unallocated;
 
     int dy = 1;
-    const auto field = [&](const char *label, const char *value, Rgb colour) {
+    const auto field = [&](const char *label, const char *value, Rgb colour,
+                           bool numeric = false) {
         panel_text(fb, area, 2, dy, label, style_.dim, style_.bg);
-        panel_text(fb, area, kValueCol, dy, value, colour, style_.bg);
+        if (numeric)
+            panel_numeric_right(fb, area, dy, value, colour, style_.dim,
+                                style_.bg);
+        else
+            panel_text(fb, area, kValueCol, dy, value, colour, style_.bg);
         ++dy;
     };
 
     std::snprintf(line, sizeof line, "0x%016llx",
                   static_cast<unsigned long long>(have ? d.addr : addr));
-    field("Address", line, have ? style_.ink : style_.dim);
+    field("Address", line, have ? style_.ink : style_.dim, true);
 
     if (!have) {
         /* The empty state. Named, then explained, then told what to press --
@@ -254,7 +259,7 @@ void ChunkInspector::draw(Framebuffer &fb, Rect area, const Grid &g,
     format_count(num, sizeof num, d.size);
     format_byte_size(human, sizeof human, d.size);
     std::snprintf(line, sizeof line, "%s bytes (%s)", num, human);
-    field("User Size", line, style_.ink);
+    field("User Size", line, style_.ink, true);
 
     /* Real size, with the overhead called out. The `~` is load-bearing: an
      * unrefined chunk's overhead is `usable - size`, which cannot see the chunk
@@ -265,7 +270,7 @@ void ChunkInspector::draw(Framebuffer &fb, Rect area, const Grid &g,
     std::snprintf(line, sizeof line, "%s bytes (%s%u B overhead%s)", num,
                   d.exact ? "" : "~", d.overhead,
                   d.exact ? ", measured" : ", inferred");
-    field("Real Size", line, style_.ink);
+    field("Real Size", line, style_.ink, true);
 
     field("Status", chunk_status_str(d.status),
           d.status == ChunkStatus::Freed ? style_.freed : style_.live);
@@ -280,7 +285,7 @@ void ChunkInspector::draw(Framebuffer &fb, Rect area, const Grid &g,
     std::snprintf(line, sizeof line, "%.1f s %s",
                   static_cast<double>(ms) / 1000.0,
                   d.status == ChunkStatus::Freed ? "(lived)" : "(so far)");
-    field("Lifetime", line, style_.ink);
+    field("Lifetime", line, style_.ink, true);
 
     /* How crowded the cell is, right-aligned on the status row. A cell is a
      * span of addresses, not an allocation, and a panel that showed one chunk

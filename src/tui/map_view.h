@@ -56,6 +56,7 @@
 #include "tui/heat_color.h"
 #include "tui/heatmap.h"
 #include "tui/snapshot.h"
+#include "tui/theme.h"
 
 #include <cstdint>
 
@@ -79,28 +80,30 @@ struct MapLayout {
     bool valid    = false;
 };
 
-MapLayout map_layout(Rect area) noexcept;
+MapLayout map_layout(Rect area, bool show_legend = true) noexcept;
 
 /* Sizes `g` for the cells `area` leaves room for, keeping its current bounds.
  * The only supported way to prepare a grid for `MapView::draw`. False when the
  * area holds no map, or when the bounds are degenerate -- see Grid::configure,
  * which treats both as normal operation. */
 bool fit_grid(Grid &g, Rect area) noexcept;
+bool fit_grid(Grid &g, Rect area, bool half_block,
+              bool show_legend = true) noexcept;
 
 /* The colours that are not the heat palette: the chrome around the map. M6.1's
  * theme supplies these; the defaults are its tokens. */
 struct MapStyle {
-    Rgb ink    = 0x00D8D8D8; /* text  */
-    Rgb dim    = 0x007A7A7A; /* label */
-    Rgb warn   = 0x00F5A623; /* accent, used for the truncation notice */
-    Rgb bg     = 0x000C0C0C; /* canvas */
-    Rgb cursor = 0x0033D7E8; /* M6.1's `cursor` token */
+    Rgb ink    = dark_theme().text;
+    Rgb dim    = dark_theme().dim;
+    Rgb warn   = dark_theme().accent;
+    Rgb bg     = dark_theme().bg;
+    Rgb cursor = dark_theme().cursor;
 
     /* M5.5's diff mode. Magenta because it is the one hue the heat palette does
      * not use: fresh green, freed red, settled blue, overhead yellow and empty
      * grey are all spoken for, and an overlay in a colour the map already means
      * something by would be read as a heat state rather than as a mode. */
-    Rgb leak   = 0x00E040FB;
+    Rgb leak   = dark_theme().leak;
 };
 
 class MapView {
@@ -109,6 +112,11 @@ public:
                      const HeatTimings &t = kDefaultTimings) noexcept;
 
     void             set_style(const MapStyle &s) noexcept { style_ = s; }
+    void set_animations(bool enabled) noexcept { animations_ = enabled; }
+    void set_show_legend(bool shown) noexcept { show_legend_ = shown; }
+    void set_half_block(bool enabled) noexcept {
+        half_block_ = enabled && unicode_;
+    }
     const MapStyle  &style() const noexcept { return style_; }
     const HeatRamp  &ramp()  const noexcept { return ramp_; }
 
@@ -178,6 +186,10 @@ private:
     HeatRamp    ramp_;
     HeatPalette palette_;
     MapStyle    style_{};
+    bool        unicode_ = true;
+    bool        half_block_ = false;
+    bool        animations_ = true;
+    bool        show_legend_ = true;
 };
 
 } // namespace hv

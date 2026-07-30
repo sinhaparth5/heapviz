@@ -24,6 +24,7 @@
 #include "tui/session.h"
 #include "tui/shm_cleanup.h"
 #include "tui/terminal.h"
+#include "tui/theme.h"
 
 #include <cstdint>
 #include <cstdio>
@@ -58,6 +59,8 @@ void print_usage() {
         "options:\n"
         "  --no-unicode                 ASCII glyphs, for terminals whose font\n"
         "                               has no block-drawing characters\n"
+        "  --theme dark|light           select the semantic colour theme\n"
+        "  --no-animation               disable allocation/free pulse animation\n"
         "\n"
         "development aids:\n"
         "  heapviz --term-check         run the terminal engine on a test frame\n"
@@ -113,15 +116,19 @@ constexpr hv::Rgb kWarn   = 0x00F3B158;
  * you whether the result flickered, and it cannot press Ctrl-C. */
 class TermCheckApp final : public hv::LoopApp {
 public:
-    TermCheckApp(bool timing, hv::Capabilities caps)
-        : caps_(caps), glyphs_(hv::glyphs_for(caps)), view_(caps),
+    TermCheckApp(bool timing, hv::Capabilities caps, const hv::Theme &theme,
+                 bool animations)
+        : caps_(caps), glyphs_(hv::glyphs_for(caps)),
+          view_(caps, hv::heat_palette(theme)), animations_(animations),
           timing_(timing) {
+        view_.set_animations(animations);
+        view_.set_half_block(caps.unicode);
         heap_.seed(600);
     }
 
     bool key(char c) override {
         if (c == 'q') { hv::request_quit(); return false; }
-        if (c == 'a') { animate_ = !animate_; return true; }
+        if (c == 'a' && animations_) { animate_ = !animate_; return true; }
         if (c == 't') { timing_ = !timing_; return true; }
 
         /* Before the key log, not after: M5.1's bindings are the ones a person
@@ -137,7 +144,7 @@ public:
     }
 
     void resized(int w, int h) override {
-        heap_.fit(map_area(w, h));
+        heap_.fit(map_area(w, h), caps_.unicode);
         cursor_.refit(heap_.map().grid());
     }
 
@@ -155,7 +162,8 @@ public:
      * stops, which is the point: a frame skipped mid-fade would freeze the
      * colour until the next allocation happened to arrive. */
     bool animating() const override {
-        return animate_ || hv::MapView::animating(heap_.map(), now_ms_);
+        return animations_ &&
+               (animate_ || hv::MapView::animating(heap_.map(), now_ms_));
     }
 
     void draw(hv::Framebuffer &fb, const hv::LoopStats &s) override {
@@ -188,6 +196,8 @@ public:
         int gx = 3;
         for (int rep = 0; rep < 6 && gx < w - 4; ++rep, ++gx)
             fb.put(gx, 7, hv::Cell{glyphs_.full, kAccent, kPanel, 0});
+        for (int rep = 0; rep < 6 && gx < w - 4; ++rep, ++gx)
+            fb.put(gx, 7, hv::Cell{glyphs_.dark, kAccent, kPanel, 0});
         for (int rep = 0; rep < 6 && gx < w - 4; ++rep, ++gx)
             fb.put(gx, 7, hv::Cell{glyphs_.medium, kAccent, kPanel, 0});
         for (int rep = 0; rep < 6 && gx < w - 4; ++rep, ++gx)
@@ -316,11 +326,20 @@ private:
     std::uint64_t start_ns_ = 0;
     std::uint32_t now_ms_   = 0;
     bool          animate_  = false;
+    bool          animations_ = true;
     bool          timing_   = false;
 };
 
-int term_check(bool timing, bool force_ascii) {
-    const hv::Capabilities caps = hv::detect_capabilities_from_env(force_ascii);
+struct RunOptions {
+    bool timing = false;
+    bool force_ascii = false;
+    bool animations = true;
+    hv::ThemeKind theme = hv::ThemeKind::Dark;
+};
+
+int term_check(const RunOptions &opts) {
+    const hv::Capabilities caps =
+        hv::detect_capabilities_from_env(opts.force_ascii);
 
     /* Checked before the alternate screen is entered, so the refusal lands in
      * the user's scrollback rather than on a screen that is torn down the
@@ -344,7 +363,8 @@ int term_check(bool timing, bool force_ascii) {
     cfg.color  = caps.color;
 
     hv::EventLoop  loop(cfg);
-    TermCheckApp   app(timing, caps);
+    TermCheckApp   app(opts.timing, caps, hv::theme_for(opts.theme),
+                       opts.animations);
     const hv::LoopExit why = loop.run(app);
 
     guard.restore();
@@ -364,7 +384,7 @@ int term_check(bool timing, bool force_ascii) {
 /* Runs an attached session to completion. Everything before the TerminalGuard
  * reports to the user's scrollback, because anything printed after it is torn
  * down with the alternate screen the moment the loop exits. */
-int attach_and_run(int pid, bool launched, bool force_ascii) {
+int attach_and_run(int pid, bool launched, const RunOptions &opts) {
     hv::RingSession session;
     const hv::AttachStatus st = session.attach(pid);
     if (st != hv::AttachStatus::Ok) {
@@ -385,7 +405,8 @@ int attach_and_run(int pid, bool launched, bool force_ascii) {
         return 1;
     }
 
-    const hv::Capabilities caps = hv::detect_capabilities_from_env(force_ascii);
+    const hv::Capabilities caps =
+        hv::detect_capabilities_from_env(opts.force_ascii);
 
     int w = 0, h = 0;
     if (hv::terminal_size(STDOUT_FILENO, w, h) && !hv::size_is_usable(w, h)) {
@@ -406,7 +427,7 @@ int attach_and_run(int pid, bool launched, bool force_ascii) {
     cfg.color  = caps.color;
 
     hv::EventLoop loop(cfg);
-    hv::HeapApp   app(session, caps);
+    hv::HeapApp   app(session, caps, hv::theme_for(opts.theme), opts.animations);
     const hv::LoopExit why = loop.run(app);
 
     guard.restore();
@@ -427,7 +448,7 @@ int attach_and_run(int pid, bool launched, bool force_ascii) {
     return why == hv::LoopExit::Quit || why == hv::LoopExit::FrameLimit ? 0 : 1;
 }
 
-int launch_and_run(char **cmd, bool force_ascii) {
+int launch_and_run(char **cmd, const RunOptions &opts) {
     const std::string preload = hv::find_preload();
     if (preload.empty()) {
         std::fprintf(stderr,
@@ -447,7 +468,7 @@ int launch_and_run(char **cmd, bool force_ascii) {
         return 1;
     }
 
-    return attach_and_run(l.pid, true, force_ascii);
+    return attach_and_run(l.pid, true, opts);
 }
 
 } // namespace
@@ -459,51 +480,75 @@ int main(int argc, char **argv) {
      * The scan stops at `--`, after which the arguments belong to the target:
      * `heapviz -- ./app --no-unicode` is asking the app for ASCII, not heapviz,
      * and a scan that read the whole of argv would quietly answer for both. */
-    bool timing      = false;
-    bool force_ascii = false;
+    RunOptions opts;
+    enum class Action { None, Version, Help, TermCheck, Cleanup, Pid, Launch };
+    Action action = Action::None;
+    int pid = 0;
+    char **command = nullptr;
+
     for (int i = 1; i < argc; ++i) {
         const std::string_view a{argv[i]};
-        if (a == "--") break;
-        if (a == "--debug-timing") timing = true;
-        if (a == "--no-unicode")   force_ascii = true;
-    }
-
-    if (argc >= 2) {
-        const std::string_view arg{argv[1]};
-        if (arg == "--version" || arg == "-V") { print_version(); return 0; }
-        if (arg == "--help" || arg == "-h")    { print_usage();   return 0; }
-        if (arg == "--term-check") {
-            return term_check(timing, force_ascii);
-        }
-        if (arg == "--cleanup")                { return cleanup(); }
-        if (arg == "--pid") {
-            if (argc < 3) {
-                std::fprintf(stderr, "heapviz: --pid needs a process id\n");
-                return 2;
-            }
-            const int pid = std::atoi(argv[2]);
-            if (pid <= 0) {
-                std::fprintf(stderr, "heapviz: not a process id: %s\n", argv[2]);
-                return 2;
-            }
-            return attach_and_run(pid, false, force_ascii);
-        }
-        if (arg == "--") {
-            if (argc < 3) {
+        if (a == "--") {
+            if (i + 1 >= argc) {
                 std::fprintf(stderr, "heapviz: -- needs a command to run\n");
                 return 2;
             }
-            return launch_and_run(argv + 2, force_ascii);
+            action = Action::Launch;
+            command = argv + i + 1;
+            break;
         }
-        if (arg == "--no-unicode") {
-            /* A modifier on its own is not a command. */
-            print_usage();
-            return 0;
+        if (a == "--debug-timing") { opts.timing = true; continue; }
+        if (a == "--no-unicode") { opts.force_ascii = true; continue; }
+        if (a == "--no-animation") { opts.animations = false; continue; }
+        if (a == "--theme") {
+            if (i + 1 >= argc || !hv::parse_theme(argv[i + 1], opts.theme)) {
+                std::fprintf(stderr,
+                             "heapviz: --theme needs `dark` or `light`\n");
+                return 2;
+            }
+            ++i;
+            continue;
         }
-
-        std::fprintf(stderr, "heapviz: not implemented yet: %s\n", argv[1]);
+        constexpr std::string_view prefix = "--theme=";
+        if (a.starts_with(prefix)) {
+            if (!hv::parse_theme(a.substr(prefix.size()), opts.theme)) {
+                std::fprintf(stderr, "heapviz: unknown theme: %.*s\n",
+                             static_cast<int>(a.size() - prefix.size()),
+                             a.data() + prefix.size());
+                return 2;
+            }
+            continue;
+        }
+        if (a == "--version" || a == "-V") { action = Action::Version; continue; }
+        if (a == "--help" || a == "-h") { action = Action::Help; continue; }
+        if (a == "--term-check") { action = Action::TermCheck; continue; }
+        if (a == "--cleanup") { action = Action::Cleanup; continue; }
+        if (a == "--pid") {
+            if (i + 1 >= argc) {
+                std::fprintf(stderr, "heapviz: --pid needs a process id\n");
+                return 2;
+            }
+            pid = std::atoi(argv[++i]);
+            if (pid <= 0) {
+                std::fprintf(stderr, "heapviz: not a process id: %s\n", argv[i]);
+                return 2;
+            }
+            action = Action::Pid;
+            continue;
+        }
+        std::fprintf(stderr, "heapviz: not implemented yet: %s\n", argv[i]);
         std::fprintf(stderr, "heapviz: try --help\n");
         return 2;
+    }
+
+    switch (action) {
+    case Action::Version: print_version(); return 0;
+    case Action::Help: print_usage(); return 0;
+    case Action::TermCheck: return term_check(opts);
+    case Action::Cleanup: return cleanup();
+    case Action::Pid: return attach_and_run(pid, false, opts);
+    case Action::Launch: return launch_and_run(command, opts);
+    case Action::None: break;
     }
     print_usage();
     return 0;

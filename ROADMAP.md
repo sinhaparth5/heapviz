@@ -1632,45 +1632,53 @@ else as literals.
 | `dim` | `#7A7A7A` | labels, units |
 | `bg` | `#0C0C0C` | canvas |
 
-- [ ] Theme struct + these values.
-- [ ] `--theme` flag with at least a light variant (some people profile in a
+- [x] Theme struct + these values.
+- [x] `--theme` flag with at least a light variant (some people profile in a
       light terminal; the whole thing inverts badly right now).
-- [ ] Contrast check: every text colour ≥ 4.5:1 against `bg`.
+- [x] Contrast check: every text colour ≥ 4.5:1 against `bg`.
 
 ### M6.2 Layout geometry
 
-- [ ] Row 1: title bar, with `heapviz v0.1 [PID: N - ./cmd]` left, FPS badge right.
-- [ ] Row 2: `Heap Address Range: 0x... - 0x... | Active Arena: Main`.
-- [ ] Row 3: centred `SPATIAL HEAP MAP` section title with rules either side.
-- [ ] Row 4: legend row, with the live cell-granularity value.
-- [ ] Rows 5..N-8: the map, with a 7-column address gutter.
-- [ ] Bottom block: two panels side by side, `[ CHUNK INSPECTOR ]` (≈60%) and
+- [x] Row 1: title bar, with `heapviz v0.1 [PID: N - ./cmd]` left, FPS badge right.
+- [x] Row 2: `Heap Address Range: 0x... - 0x... | Active Arena: Main`.
+- [x] Row 3: centred `SPATIAL HEAP MAP` section title with rules either side.
+- [x] Row 4: legend row, with the live cell-granularity value.
+- [x] Rows 5..N-8: the map, with a 7-column address gutter.
+- [x] Bottom block: two panels side by side, `[ CHUNK INSPECTOR ]` (≈60%) and
       `[ TELEMETRY METRICS ]` (≈40%).
-- [ ] Last row: controls bar.
-- [ ] All of the above expressed as a constraint-solved layout, not hardcoded
+- [x] Last row: controls bar.
+- [x] All of the above expressed as a constraint-solved layout, not hardcoded
       row numbers. It has to survive any terminal size.
-- [ ] Graceful degradation: below ~100 columns, stack the two panels; below
+- [x] Graceful degradation: below ~100 columns, stack the two panels; below
       ~30 rows, collapse the legend.
 
 ### M6.3 Chrome details
 
-- [ ] Box-drawing charset: `─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼` for panels; the mockup uses
+- [x] Box-drawing charset: `─ │ ┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼` for panels; the mockup uses
       a bracketed-label style `[ CHUNK INSPECTOR ]` inset into the top rule.
-- [ ] Half-block vertical resolution: render two grid rows per terminal row
+- [x] Half-block vertical resolution: render two grid rows per terminal row
       using `▀` with fg = top cell, bg = bottom cell. Doubles the map
       resolution at no cost, and is the biggest visual upgrade available.
-- [ ] Density ramp `░ ▒ ▓ █` for partial cell fill.
-- [ ] Right-aligned numeric columns with thousands separators; units in `dim`.
-- [ ] Monospace-safe: every glyph used must be single-width. Test with a wide
+- [x] Density ramp `░ ▒ ▓ █` for partial cell fill.
+- [x] Right-aligned numeric columns with thousands separators; units in `dim`.
+- [x] Monospace-safe: every glyph used must be single-width. Test with a wide
       CJK glyph nearby to confirm no column drift.
 
 ### M6.4 Motion
 
-- [ ] Pulse easing is a smooth curve (ease-out), not linear. Linear pulses look
+- [x] Pulse easing is a smooth curve (ease-out), not linear. Linear pulses look
       mechanical.
-- [ ] FPS counter is smoothed over ~30 frames. A jittering number reads as
+- [x] FPS counter is smoothed over ~30 frames. A jittering number reads as
       instability even when the tool is fine.
-- [ ] `--no-animation` flag for screenshots, recordings, and CI.
+- [x] `--no-animation` flag for screenshots, recordings, and CI.
+
+M6 centralizes the mockup palette in `Theme`, with a light variant and a
+contrast-safe danger-text companion for the darker freed-cell fill. `AppLayout`
+solves header, map, panel, and footer rectangles for every supported terminal
+size; the map uses two logical rows per terminal row in Unicode mode and keeps
+four distinct weights in glyph-only and ASCII paths. Tests pin theme contrast,
+responsive breakpoints, half-block fg/bg pairing, glyph widths (including a
+wide CJK negative case), easing, and the allocation-free draw path.
 
 ---
 

@@ -209,7 +209,24 @@ std::string drive(int master, int report_fd, std::string &stream) {
             const ssize_t n = ::read(report_fd, buf, sizeof buf);
             if (n <= 0) break;
             line.append(buf, static_cast<std::size_t>(n));
-            if (line.find('\n') != std::string::npos) return line;
+            if (line.find('\n') != std::string::npos) {
+                /* Terminal restore precedes the report write in the child, but
+                 * the pipe and pty are independent fds. Under instrumentation
+                 * the pipe can become readable before the pty's final cursor-
+                 * show bytes are scheduled to us. Drain that already-written
+                 * tail before inspecting the stream. */
+                for (int tail = 0; tail < 10; ++tail) {
+                    pollfd pfd{master, POLLIN, 0};
+                    if (::poll(&pfd, 1, 10) <= 0) break;
+                    char scratch[4096];
+                    const ssize_t got = ::read(master, scratch, sizeof scratch);
+                    if (got > 0)
+                        stream.append(scratch, static_cast<std::size_t>(got));
+                    else
+                        break;
+                }
+                return line;
+            }
         }
         if ((fds[1].revents & (POLLHUP | POLLERR)) != 0 && line.empty()) break;
 

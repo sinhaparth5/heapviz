@@ -130,9 +130,14 @@ void Metrics::draw(Framebuffer &fb, Rect area) const noexcept {
     const bool wide = area.w >= kMetricsWideCols;
 
     int dy = 1;
-    const auto field = [&](const char *label, const char *value, Rgb colour) {
+    const auto field = [&](const char *label, const char *value, Rgb colour,
+                           bool numeric = true) {
         panel_text(fb, area, 2, dy, label, style_.dim, style_.bg);
-        panel_text(fb, area, kValueCol, dy, value, colour, style_.bg);
+        if (numeric)
+            panel_numeric_right(fb, area, dy, value, colour, style_.dim,
+                                style_.bg);
+        else
+            panel_text(fb, area, kValueCol, dy, value, colour, style_.bg);
         ++dy;
     };
 
@@ -177,7 +182,7 @@ void Metrics::draw(Framebuffer &fb, Rect area) const noexcept {
      * possible one. */
     const FragBadge badge = frag_badge(frag_pct_);
     if (badge == FragBadge::Unknown) {
-        field("Fragmented", "--", style_.dim);
+        field("Fragmented", "--", style_.dim, false);
     } else {
         Rgb colour = style_.good;
         if (badge == FragBadge::Med) colour = style_.warn;

@@ -45,8 +45,10 @@ const char *color_mode_str(ColorMode m) noexcept;
  * density ramp when colour is also degraded. */
 struct GlyphSet {
     char32_t full;   /* U+2588 FULL BLOCK        / '#' */
-    char32_t medium; /* U+2593 DARK SHADE        / '=' */
+    char32_t dark;   /* U+2593 DARK SHADE        / 'O' */
+    char32_t medium; /* U+2592 MEDIUM SHADE      / '=' */
     char32_t light;  /* U+2591 LIGHT SHADE       / '.' */
+    char32_t half;   /* U+2580 UPPER HALF BLOCK  / '#' */
     BoxStyle box;    /* Rounded                  / Ascii */
 };
 
@@ -56,6 +58,11 @@ struct Capabilities {
 };
 
 GlyphSet glyphs_for(const Capabilities &caps) noexcept;
+
+/* True for the deliberately small glyph vocabulary heapviz permits in its
+ * fixed terminal grid. Wide CJK characters are rejected rather than guessed
+ * into one column and allowed to shift every cell after them. */
+bool glyph_is_single_width(char32_t glyph) noexcept;
 
 /* Decides colour depth from `colorterm` (COLORTERM) and `term` (TERM), either
  * of which may be null. `force_ascii` is the `--no-unicode` flag; it only ever

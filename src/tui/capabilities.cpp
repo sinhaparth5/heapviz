@@ -80,9 +80,23 @@ const char *color_mode_str(ColorMode m) noexcept {
 
 GlyphSet glyphs_for(const Capabilities &caps) noexcept {
     if (caps.unicode) {
-        return GlyphSet{U'█', U'▓', U'░', BoxStyle::Rounded};
+        return GlyphSet{U'█', U'▓', U'▒', U'░', U'▀', BoxStyle::Rounded};
     }
-    return GlyphSet{U'#', U'=', U'.', BoxStyle::Ascii};
+    return GlyphSet{U'#', U'O', U'=', U'.', U'#', BoxStyle::Ascii};
+}
+
+bool glyph_is_single_width(char32_t glyph) noexcept {
+    if (glyph >= 0x20 && glyph <= 0x7e) return true;
+    switch (glyph) {
+    case U'░': case U'▒': case U'▓': case U'█': case U'▀':
+    case U'─': case U'│': case U'┌': case U'┐': case U'└': case U'┘':
+    case U'├': case U'┤': case U'┬': case U'┴': case U'┼':
+    case U'━': case U'┃': case U'┏': case U'┓': case U'┗': case U'┛':
+    case U'╭': case U'╮': case U'╰': case U'╯':
+        return true;
+    default:
+        return false;
+    }
 }
 
 Capabilities detect_capabilities(const char *colorterm, const char *term,

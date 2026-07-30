@@ -49,6 +49,7 @@
 #include "tui/heatmap.h"
 #include "tui/panel.h"
 #include "tui/region_map.h"
+#include "tui/theme.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -120,13 +121,13 @@ struct ChunkDetail {
 /* The chrome colours the panel needs. Same shape and the same defaults as
  * `MapStyle`, so M6.1 can hand both the theme's tokens. */
 struct InspectorStyle {
-    Rgb ink    = 0x00D8D8D8;
-    Rgb dim    = 0x007A7A7A;
-    Rgb accent = 0x00F5A623;
-    Rgb frame  = 0x00C87828;
-    Rgb live   = 0x003584E4;
-    Rgb freed  = 0x00E01B24;
-    Rgb bg     = 0x000C0C0C;
+    Rgb ink    = dark_theme().text;
+    Rgb dim    = dark_theme().dim;
+    Rgb accent = dark_theme().accent;
+    Rgb frame  = dark_theme().frame;
+    Rgb live   = dark_theme().active;
+    Rgb freed  = dark_theme().danger_text;
+    Rgb bg     = dark_theme().bg;
 };
 
 class ChunkInspector {

@@ -457,7 +457,8 @@ void test_the_glyph_ramp_is_monotone_in_density() {
     const hv::GlyphSet a = hv::glyphs_for(kAscii);
 
     auto weight = [](char32_t glyph, const hv::GlyphSet &set) {
-        if (glyph == set.full)   return 3;
+        if (glyph == set.full)   return 4;
+        if (glyph == set.dark)   return 3;
         if (glyph == set.medium) return 2;
         if (glyph == set.light)  return 1;
         return 0;
@@ -465,7 +466,7 @@ void test_the_glyph_ramp_is_monotone_in_density() {
 
     constexpr std::uint64_t kCell = 4096;
     int last_u = 0, last_a = 0, saw_full = 0;
-    bool reached[4] = {false, false, false, false};
+    bool reached[5] = {false, false, false, false, false};
 
     for (std::uint64_t bytes = 0; bytes <= kCell; bytes += 16) {
         hv::CellAggregate agg;
@@ -475,13 +476,13 @@ void test_the_glyph_ramp_is_monotone_in_density() {
         const int wu = weight(unicode.glyph_for(agg, kCell), u);
         const int wa = weight(ascii.glyph_for(agg, kCell), a);
 
-        check(wu >= 1, "glyph: every cell gets one of the three shades");
+        check(wu >= 1, "glyph: every cell gets one of the four shades");
         check(wu >= last_u, "glyph: unicode weight never falls as fill rises");
         check(wa >= last_a, "glyph: ascii weight never falls as fill rises");
         check(wu == wa, "glyph: the two sets step at the same thresholds");
 
-        if (wu == 3) ++saw_full;
-        if (wu >= 0 && wu <= 3) reached[wu] = true;
+        if (wu == 4) ++saw_full;
+        if (wu >= 0 && wu <= 4) reached[wu] = true;
         last_u = wu;
         last_a = wa;
     }
@@ -490,10 +491,10 @@ void test_the_glyph_ramp_is_monotone_in_density() {
      * satisfy monotonicity, and one that never did would satisfy it too. */
     check(saw_full > 0, "glyph: a packed cell reaches the full block");
 
-    /* All three shades have to be reachable, or the ramp has two steps wearing
-     * three names -- which is monotone, and useless on the fallback terminal
+    /* All four shades have to be reachable, or the ramp has fewer steps wearing
+     * four names -- which is monotone, and useless on the fallback terminal
      * where the glyph is the only thing left encoding density. */
-    check(reached[1] && reached[2] && reached[3],
+    check(reached[1] && reached[2] && reached[3] && reached[4],
           "glyph: every shade is reachable somewhere in the range");
     hv::CellAggregate sliver;
     sliver.live_bytes = 32;
@@ -506,6 +507,39 @@ void test_the_glyph_ramp_is_monotone_in_density() {
     hv::CellAggregate nothing;
     check(weight(unicode.glyph_for(nothing, kCell), u) == 1,
           "glyph: unallocated space still gets a glyph");
+}
+
+void test_half_blocks_pack_two_grid_rows_into_one_terminal_row() {
+    const hv::Rect area{0, 0, 40, 8};
+    const hv::MapLayout layout = hv::map_layout(area);
+
+    hv::Grid grid;
+    grid.set_bounds(kBase, kBase + kSpan);
+    check(hv::fit_grid(grid, area, true),
+          "half block: the doubled logical grid fits");
+    check(grid.rows() == layout.cells.h * 2,
+          "half block: grid has two rows per terminal row");
+
+    hv::HeatMap map;
+    map.configure(grid);
+    map.on_alloc(grid.base(), static_cast<std::uint32_t>(grid.cell_bytes()),
+                 static_cast<std::uint32_t>(grid.cell_bytes()), 0);
+
+    hv::Framebuffer fb;
+    fb.resize(area.w, area.h);
+    fb.clear();
+    hv::MapView view{kUnicode};
+    view.set_half_block(true);
+    view.draw(fb, area, map, 5000);
+
+    const hv::Cell &cell = fb.at_back(layout.cells.x, layout.cells.y);
+    check(cell.glyph == U'▀', "half block: UPPER HALF BLOCK is emitted");
+    check(cell.fg == view.ramp().settled(map.at(0), grid.cell_bytes()),
+          "half block: foreground is the top logical cell");
+    check(cell.bg == view.ramp().settled(
+                         map.at(static_cast<std::size_t>(grid.cols())),
+                         grid.cell_bytes()),
+          "half block: background is the bottom logical cell");
 }
 
 /* --- animation ------------------------------------------------------------ */
@@ -606,6 +640,7 @@ int main() {
     test_a_map_larger_than_its_area_is_clipped();
     test_cell_colours_come_from_the_ramp();
     test_the_glyph_ramp_is_monotone_in_density();
+    test_half_blocks_pack_two_grid_rows_into_one_terminal_row();
     test_animating_tracks_the_fades();
     test_draw_allocates_nothing();
 

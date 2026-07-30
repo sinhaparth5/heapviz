@@ -42,12 +42,14 @@
 #include "tui/fragmentation.h"
 #include "tui/heatmap.h"
 #include "tui/inspector.h"
+#include "tui/layout.h"
 #include "tui/map_view.h"
 #include "tui/metrics.h"
 #include "tui/proc_maps.h"
 #include "tui/region_map.h"
 #include "tui/session.h"
 #include "tui/snapshot.h"
+#include "tui/theme.h"
 
 #include <cstdint>
 #include <vector>
@@ -87,7 +89,8 @@ enum class SessionState : std::uint8_t {
 
 class HeapApp final : public LoopApp {
 public:
-    HeapApp(RingSession &session, Capabilities caps);
+    HeapApp(RingSession &session, Capabilities caps,
+            Theme theme = dark_theme(), bool animations = true);
 
     unsigned drain() override;
     bool     update(std::uint64_t now_ns) override;
@@ -140,24 +143,10 @@ private:
      * true if anything changed. */
     bool enrich(std::uint32_t now_ms) noexcept;
     void refit(int w, int h);
-    Rect map_area(int w, int h) const noexcept;
-
-    /* Where the two bottom panels go, or zero-area rects when the terminal
-     * cannot give them the room. All three of these and `map_area` are derived
-     * from the same constants so that they cannot overlap -- M6.2 replaces the
-     * set with a solved layout that survives sizes these do not.
-     *
-     * `metrics_cols` is where the split is applied and `metrics_split` is where
-     * it is decided -- the reasoning is in `metrics.h`, and it is a free
-     * function so that a test can ask it about a width without standing up a
-     * session to do it. */
-    int  metrics_cols(int w) const noexcept;
-    Rect inspector_area(int w, int h) const noexcept;
-    Rect metrics_area(int w, int h) const noexcept;
-    bool inspector_fits(int h) const noexcept;
 
     RingSession &session_;
     Capabilities caps_;
+    Theme        theme_;
     MapView      view_;
     ChunkTable   table_;
     HeatMap      map_;
@@ -213,6 +202,8 @@ private:
     bool         paused_ = false;
     bool         help_visible_ = false;
     bool         reset_loop_stats_ = false;
+    bool         animations_ = true;
+    AppLayout    layout_{};
 };
 
 } // namespace hv

@@ -107,9 +107,20 @@ void test_unicode_flag() {
           "--no-unicode does not touch colour depth");
 
     const hv::GlyphSet g = hv::glyphs_for(off);
-    check(g.full == U'#' && g.medium == U'=' && g.light == U'.',
-          "the ASCII ramp is the one the roadmap names");
+    check(g.full == U'#' && g.dark == U'O' && g.medium == U'=' &&
+              g.light == U'.',
+          "the ASCII fallback keeps four visibly distinct weights");
     check(g.box == hv::BoxStyle::Ascii, "ASCII mode draws ASCII borders");
+
+    const hv::GlyphSet unicode = hv::glyphs_for(on);
+    check(hv::glyph_is_single_width(unicode.full) &&
+              hv::glyph_is_single_width(unicode.dark) &&
+              hv::glyph_is_single_width(unicode.medium) &&
+              hv::glyph_is_single_width(unicode.light) &&
+              hv::glyph_is_single_width(unicode.half),
+          "every map glyph is explicitly single-width");
+    check(!hv::glyph_is_single_width(U'界'),
+          "a nearby wide CJK glyph is rejected, so it cannot drift columns");
 }
 
 /* Every colour the 6x6x6 cube can express must quantise back to its own index,

@@ -42,6 +42,7 @@
 #define HEAPVIZ_TUI_METRICS_H
 
 #include "tui/framebuffer.h"
+#include "tui/theme.h"
 
 #include <cstdint>
 
@@ -138,14 +139,14 @@ struct MetricsSample {
 /* Same shape and the same defaults as `InspectorStyle`, so M6.1 can hand both
  * the theme's tokens without either knowing what a theme is. */
 struct MetricsStyle {
-    Rgb ink    = 0x00D8D8D8;
-    Rgb dim    = 0x007A7A7A;
-    Rgb accent = 0x00F5A623;
-    Rgb frame  = 0x00C87828;
-    Rgb good   = 0x0058C7F3;
-    Rgb warn   = 0x00F5A623;
-    Rgb bad    = 0x00E05252;
-    Rgb bg     = 0x000C0C0C;
+    Rgb ink    = dark_theme().text;
+    Rgb dim    = dark_theme().dim;
+    Rgb accent = dark_theme().accent;
+    Rgb frame  = dark_theme().frame;
+    Rgb good   = dark_theme().title;
+    Rgb warn   = dark_theme().accent;
+    Rgb bad    = dark_theme().danger_text;
+    Rgb bg     = dark_theme().bg;
 };
 
 class Metrics {

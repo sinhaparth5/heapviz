@@ -198,12 +198,13 @@ terminal engine underneath is raw mode, a double-buffered grid, a differential
 renderer that puts one write on the wire per frame, and a paced event loop that
 handles resizing and idles at close to no CPU. Above that sit the spatial map,
 a movable cursor, a chunk inspector, a telemetry metrics panel, live
-fragmentation analysis with the largest free hole beside it, and snapshot-based
-leak hunting.
+fragmentation analysis with the largest free hole beside it, snapshot-based
+leak hunting, responsive mockup-derived layout, semantic dark/light themes, and
+double-resolution half-block map rendering. Use `--theme light` for a light
+canvas or `--no-animation` for stable screenshots and CI captures.
 
-Not there yet: the visual polish the mockup above shows. `heapviz --term-check`
-exercises the terminal layer and the map against a synthetic heap without
-needing a target.
+`heapviz --term-check` exercises the terminal layer and the map against a
+synthetic heap without needing a target.
 
 [**ROADMAP.md**](ROADMAP.md) tracks 212 tasks across 8 milestones, from the
 shared-memory ABI through the interceptor, sparse grid, ANSI engine,

@@ -153,7 +153,9 @@ Rgb lerp_oklab(Rgb from, Rgb to, float t) noexcept {
 
 float pulse_wave(float u) noexcept {
     const float x = clamp01(u);
-    return 1.0f - std::fabs(2.0f * x - 1.0f);
+    const float t = x <= 0.5f ? x * 2.0f : (1.0f - x) * 2.0f;
+    const float inv = 1.0f - t;
+    return 1.0f - inv * inv * inv;
 }
 
 bool cell_animating(const CellAggregate &a, const HeatTimings &t,

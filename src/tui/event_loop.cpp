@@ -159,8 +159,9 @@ LoopExit EventLoop::run(LoopApp &app) {
     bool dirty        = true;
     bool full_repaint = true;
 
-    fps_mark_ns_    = monotonic_ns();
-    fps_mark_drawn_ = 0;
+    fps_samples_.fill(FpsSample{});
+    fps_next_ = 0;
+    fps_count_ = 0;
 
     for (;;) {
         const std::uint64_t frame_start = monotonic_ns();
@@ -173,8 +174,9 @@ LoopExit EventLoop::run(LoopApp &app) {
          * either wholly before the reset or wholly after it. */
         if (app.take_stats_reset()) {
             stats_            = LoopStats{};
-            fps_mark_ns_      = frame_start;
-            fps_mark_drawn_   = 0;
+            fps_samples_.fill(FpsSample{});
+            fps_next_         = 0;
+            fps_count_        = 0;
             dirty             = true;
         }
 
@@ -271,14 +273,20 @@ LoopExit EventLoop::run(LoopApp &app) {
          * than only on the machine it was measured on. */
         if (t.total_ns > period_ns_) ++stats_.overruns;
 
-        /* --- fps, over a one-second window ----------------------------- */
-        const std::uint64_t since_mark = t_updated - fps_mark_ns_;
-        if (since_mark >= kNsPerSec) {
-            stats_.fps = static_cast<double>(stats_.drawn - fps_mark_drawn_) *
-                         static_cast<double>(kNsPerSec) /
-                         static_cast<double>(since_mark);
-            fps_mark_ns_    = t_updated;
-            fps_mark_drawn_ = stats_.drawn;
+        /* --- fps, smoothed over the last 30 loop frames ---------------- */
+        fps_samples_[fps_next_] = FpsSample{t_updated, stats_.drawn};
+        fps_next_ = (fps_next_ + 1) % kFpsSamples;
+        if (fps_count_ < kFpsSamples) ++fps_count_;
+        if (fps_count_ >= 2) {
+            const std::size_t oldest =
+                (fps_next_ + kFpsSamples - fps_count_) % kFpsSamples;
+            const FpsSample &first = fps_samples_[oldest];
+            const std::uint64_t elapsed = t_updated - first.ns;
+            stats_.fps = elapsed == 0
+                             ? 0.0
+                             : static_cast<double>(stats_.drawn - first.drawn) *
+                                   static_cast<double>(kNsPerSec) /
+                                   static_cast<double>(elapsed);
         }
 
         /* --- wait ------------------------------------------------------ */

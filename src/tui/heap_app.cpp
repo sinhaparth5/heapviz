@@ -17,36 +17,28 @@ namespace hv {
 
 namespace {
 
-/* The chrome, until M6.1's theme owns these. */
-constexpr Rgb kInk   = 0x00D8D8D8;
-constexpr Rgb kDim   = 0x007A7A7A;
-constexpr Rgb kWarn  = 0x00F5A623;
-constexpr Rgb kBad   = 0x00E05252;
-constexpr Rgb kGood  = 0x0058C7F3;
-constexpr Rgb kPanel = 0x000C0C0C;
-/* M5.5's diff mode, and the same value as `MapStyle::leak` on purpose: the
- * banner and the cells it describes have to be recognisably one thing. */
-constexpr Rgb kLeak  = 0x00E040FB;
-
-/* Three header rows and one status row, both fixed rather than sized to their
- * contents. A map whose top edge moved when a banner appeared would re-bucket
- * the whole address space at the moment the user most wants to read it. */
-constexpr int kHeaderRows = 3;
-constexpr int kFooterRows = 1;
-
-/* The two bottom panels share their rows, so the row gate can be one gate. */
-static_assert(kMetricsRows == kInspectorRows,
-              "the bottom block is one band of rows, not two");
-
 std::uint32_t clamp_u32(std::uint64_t v) noexcept {
     return v > UINT32_MAX ? UINT32_MAX : static_cast<std::uint32_t>(v);
 }
 
 } // namespace
 
-HeapApp::HeapApp(RingSession &session, Capabilities caps)
-    : session_(session), caps_(caps), view_(caps),
+HeapApp::HeapApp(RingSession &session, Capabilities caps, Theme theme,
+                 bool animations)
+    : session_(session), caps_(caps), theme_(theme),
+      view_(caps, heat_palette(theme)),
       scanner_(session.pid()), reader_(session.pid()) {
+    animations_ = animations;
+    view_.set_animations(animations);
+    view_.set_half_block(caps.unicode);
+    view_.set_style(MapStyle{theme.text, theme.dim, theme.accent, theme.bg,
+                             theme.cursor, theme.leak});
+    inspect_.set_style(InspectorStyle{
+        theme.text, theme.dim, theme.accent, theme.frame, theme.active,
+        theme.danger_text, theme.bg});
+    metrics_.set_style(MetricsStyle{
+        theme.text, theme.dim, theme.accent, theme.frame, theme.title,
+        theme.accent, theme.danger_text, theme.bg});
     batch_.resize(kMaxEventsPerFrame); /* once; draining allocates nothing */
     staged_.reserve(kMaxEventsPerFrame);
 
@@ -372,10 +364,10 @@ bool HeapApp::enrich(std::uint32_t now_ms) noexcept {
     return changed;
 }
 
-void HeapApp::refit(int w, int h) {
+void HeapApp::refit(int, int) {
     map_.set_regions(&regions_);
     grid_.set_bounds(bounds_.base, bounds_.end);
-    if (!fit_grid(grid_, map_area(w, h))) return;
+    if (!fit_grid(grid_, layout_.map, caps_.unicode, layout_.legend)) return;
 
     /* A granularity change invalidates every aggregate, and rebuilding from the
      * chunk table is the only correct response. `configure` says whether that
@@ -459,7 +451,7 @@ bool HeapApp::key(char byte) {
 }
 
 bool HeapApp::animating() const {
-    return !paused_ && MapView::animating(map_, now_ms_);
+    return animations_ && !paused_ && MapView::animating(map_, now_ms_);
 }
 
 bool HeapApp::take_stats_reset() {
@@ -487,39 +479,10 @@ void HeapApp::reset_stats() noexcept {
 void HeapApp::resized(int w, int h) {
     width_  = w;
     height_ = h;
+    layout_ = solve_layout(w, h);
+    view_.set_show_legend(layout_.legend);
     geometry_dirty_ = true;
     if (!bounds_.empty()) refit(w, h);
-}
-
-bool HeapApp::inspector_fits(int h) const noexcept {
-    return h - kHeaderRows - kFooterRows - kInspectorRows >= kInspectorMinMapRows;
-}
-
-Rect HeapApp::map_area(int w, int h) const noexcept {
-    const int top = kHeaderRows;
-    const int panel = inspector_fits(h) ? kInspectorRows : 0;
-    return Rect{0, top, w, h - top - kFooterRows - panel};
-}
-
-int HeapApp::metrics_cols(int w) const noexcept {
-    return metrics_split(w, kInspectorMinCols);
-}
-
-Rect HeapApp::inspector_area(int w, int h) const noexcept {
-    if (!inspector_fits(h)) return Rect{};
-    return Rect{0, h - kFooterRows - kInspectorRows, w - metrics_cols(w),
-                kInspectorRows};
-}
-
-Rect HeapApp::metrics_area(int w, int h) const noexcept {
-    /* Tied to the inspector's row gate rather than having its own: the two
-     * occupy the same rows, so a terminal that cannot spare them for one cannot
-     * spare them for the other. M6.2's solved layout is where a short-and-wide
-     * terminal gets to keep the metrics and lose the inspector. */
-    if (!inspector_fits(h)) return Rect{};
-    const int mw = metrics_cols(w);
-    if (mw == 0) return Rect{};
-    return Rect{w - mw, h - kFooterRows - kMetricsRows, mw, kMetricsRows};
 }
 
 void HeapApp::draw_help(Framebuffer &fb) const noexcept {
@@ -528,51 +491,53 @@ void HeapApp::draw_help(Framebuffer &fb) const noexcept {
     const Rect box{(fb.width() - box_w) / 2, (fb.height() - box_h) / 2,
                    box_w, box_h};
 
-    fb.fill(box, Cell{U' ', kInk, kPanel, 0});
-    fb.box(box, BoxStyle::Rounded, kGood, kPanel);
+    fb.fill(box, Cell{U' ', theme_.text, theme_.bg, 0});
+    fb.box(box, caps_.unicode ? BoxStyle::Rounded : BoxStyle::Ascii,
+           theme_.title, theme_.bg);
 
     int row = 1;
-    const auto line = [&](const char *text, Rgb colour = kInk,
+    const auto line = [&](const char *text, Rgb colour,
                           std::uint8_t attrs = kAttrNone) {
-        panel_text(fb, box, 2, row, text, colour, kPanel, attrs);
+        panel_text(fb, box, 2, row, text, colour, theme_.bg, attrs);
         ++row;
     };
 
-    line("KEYBOARD HELP", kGood, kAttrBold);
-    line("");
-    line("q          quit");
-    line("?          close this help");
-    line("Space      pause / resume (live target)");
-    line("r          reset counters, peaks, drops, and frame stats");
-    line("");
-    line("h j k l    move cursor       H J K L    move x10");
-    line("g / G      first / last cell");
-    line("n / N      next / previous occupied cell");
-    line("Tab        cycle chunks in the selected cell");
-    line("");
-    line("s          take snapshot     d          toggle diff");
-    line("S          clear snapshot");
-    if (paused_) line("Display paused; ring events are still being drained.", kWarn);
+    line("KEYBOARD HELP", theme_.title, kAttrBold);
+    line("", theme_.text);
+    line("q          quit", theme_.text);
+    line("?          close this help", theme_.text);
+    line("Space      pause / resume (live target)", theme_.text);
+    line("r          reset counters, peaks, drops, and frame stats", theme_.text);
+    line("", theme_.text);
+    line("h j k l    move cursor       H J K L    move x10", theme_.text);
+    line("g / G      first / last cell", theme_.text);
+    line("n / N      next / previous occupied cell", theme_.text);
+    line("Tab        cycle chunks in the selected cell", theme_.text);
+    line("", theme_.text);
+    line("s          take snapshot     d          toggle diff", theme_.text);
+    line("S          clear snapshot", theme_.text);
+    if (paused_)
+        line("Display paused; ring events are still being drained.", theme_.accent);
 }
 
 void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
     const int w = fb.width();
     const int h = fb.height();
 
-    fb.clear(Cell{U' ', kInk, kPanel, 0});
+    fb.clear(Cell{U' ', theme_.text, theme_.bg, 0});
 
     char line[256];
 
     /* Row 0: what is being watched. */
     const char *comm = session_.comm();
-    std::snprintf(line, sizeof line, " heapviz 0.1.0-dev   [pid %d%s%s]",
+    std::snprintf(line, sizeof line, " heapviz v0.1   [PID: %d%s%s]",
                   session_.pid(), comm[0] != '\0' ? " - " : "",
                   comm[0] != '\0' ? comm : "");
-    fb.text(0, 0, line, kGood, kPanel, kAttrBold);
+    fb.text(0, 0, line, theme_.title, theme_.bg, kAttrBold);
 
     std::snprintf(line, sizeof line, "%.0f fps ", stats.fps);
     const auto rlen = static_cast<int>(std::strlen(line));
-    if (w > rlen) fb.text(w - rlen, 0, line, kDim, kPanel);
+    if (w > rlen) fb.text(w - rlen, 0, line, theme_.dim, theme_.bg);
 
     /* M5.5's banner, on the title row rather than on a row of its own.
      *
@@ -603,7 +568,7 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
                           snap_.taken_at());
         }
         const auto blen = static_cast<int>(std::strlen(line));
-        if (w > rlen + blen) fb.text(w - rlen - blen, 0, line, kLeak, kPanel,
+        if (w > rlen + blen) fb.text(w - rlen - blen, 0, line, theme_.leak, theme_.bg,
                                      kAttrBold);
     }
 
@@ -611,7 +576,8 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
     char arena[kArenaLabelMax];
     scanner_.arena_label(arena, sizeof arena);
     if (bounds_.empty()) {
-        std::snprintf(line, sizeof line, " Heap: (not yet known)   Arena: %s",
+        std::snprintf(line, sizeof line,
+                      " Heap Address Range: (not yet known) | Active Arena: %s",
                       arena);
     } else {
         char cell[32], span[32];
@@ -624,12 +590,12 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
         const std::uint64_t lo = regions_.spans().front().start;
         const std::uint64_t hi = regions_.spans().back().end;
         std::snprintf(line, sizeof line,
-                      " Heap: 0x%012llx - 0x%012llx (%s mapped)   Arena: %s   "
-                      "1 cell = %s",
+                      " Heap Address Range: 0x%012llx - 0x%012llx"
+                      " | Active Arena: %s | %s mapped | 1 cell = %s",
                       static_cast<unsigned long long>(lo),
-                      static_cast<unsigned long long>(hi), span, arena, cell);
+                      static_cast<unsigned long long>(hi), arena, span, cell);
     }
-    fb.text(0, 1, line, kInk, kPanel);
+    fb.text(0, 1, line, theme_.text, theme_.bg);
 
     if (regions_.count() > 1) {
         /* Named rather than silent: rows in the gutter restart at each region,
@@ -638,17 +604,17 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
         std::snprintf(line, sizeof line, " %zu regions packed ",
                       regions_.count());
         const auto len = static_cast<int>(std::strlen(line));
-        if (w > len) fb.text(w - len, 1, line, kWarn, kPanel);
+        if (w > len) fb.text(w - len, 1, line, theme_.accent, theme_.bg);
     }
 
     /* Row 2: the model, and then whatever is wrong with it. */
-    std::snprintf(line, sizeof line,
-                  " Live: %llu chunks / %llu KiB   Events: %llu   On map: %llu",
-                  static_cast<unsigned long long>(live_),
-                  static_cast<unsigned long long>(live_bytes_ / 1024),
-                  static_cast<unsigned long long>(events_),
-                  static_cast<unsigned long long>(map_.total_live_chunks()));
-    fb.text(0, 2, line, kInk, kPanel);
+    constexpr const char *section = " SPATIAL HEAP MAP ";
+    const int section_len = static_cast<int>(std::strlen(section));
+    if (w >= section_len) {
+        fb.hline(0, 2, w, caps_.unicode ? U'─' : U'-', theme_.frame, theme_.bg);
+        fb.text((w - section_len) / 2, 2, section, theme_.accent, theme_.bg,
+                kAttrBold);
+    }
 
     const std::uint64_t dropped = session_.dropped() - dropped_at_attach_;
 
@@ -668,7 +634,8 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
     }
     if (line[0] != '\0') {
         const auto len = static_cast<int>(std::strlen(line));
-        if (w > len && dropped == 0) fb.text(w - len, 2, line, kDim, kPanel);
+        if (w > len && dropped == 0)
+            fb.text(w - len, 2, line, theme_.dim, theme_.bg);
     }
 
     /* Dropped events are reported the moment they appear rather than folded
@@ -679,10 +646,11 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
         std::snprintf(line, sizeof line, " %llu events DROPPED - display is incomplete ",
                       static_cast<unsigned long long>(dropped));
         const auto len = static_cast<int>(std::strlen(line));
-        if (w > len) fb.text(w - len, 2, line, kBad, kPanel, kAttrBold);
+        if (w > len)
+            fb.text(w - len, 2, line, theme_.danger_text, theme_.bg, kAttrBold);
     }
 
-    const Rect area = map_area(w, h);
+    const Rect area = layout_.map;
     view_.draw(fb, area, map_, now_ms_);
     /* Before the cursor, so a candidate cell the cursor is sitting on still
      * shows where the cursor is. */
@@ -693,14 +661,14 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
      * the real address rather than the packed coordinate: the coordinate exists
      * nowhere in the target, so it is not a number anyone could look up in a
      * debugger. */
-    const Rect panel = inspector_area(w, h);
+    const Rect panel = layout_.inspector;
     if (panel.h > 0)
         inspect_.draw(fb, panel, grid_, cursor_, &regions_, now_ms_);
 
     /* M5.3's panel, sharing the block. The two never overlap because both come
      * out of `metrics_cols`, which is the only thing that knows where the
      * boundary is. */
-    const Rect stats_panel = metrics_area(w, h);
+    const Rect stats_panel = layout_.metrics;
     if (stats_panel.w > 0) metrics_.draw(fb, stats_panel);
 
     /* The footer: the session's state, in the words the user needs. */
@@ -708,7 +676,7 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
      * enumerator, but the compiler will not take an enum's declared range as a
      * promise about its value -- and at -O3 that becomes a -Werror. */
     const char *note = " q quit";
-    Rgb colour = kDim;
+    Rgb colour = theme_.dim;
     if (help_visible_) {
         if (paused_)
             note = " HELP   q quit   ? close   r reset   Space resume";
@@ -718,14 +686,14 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
             note = " HELP   q quit   ? close   r reset";
         else
             note = " HELP   q quit   ? close";
-        colour = kGood;
+        colour = theme_.title;
     } else if (paused_) {
         std::snprintf(line, sizeof line,
                       " PAUSED   q quit   ? help   Space resume   r reset"
                       "   %zu events staged",
                       staged_events());
         note = line;
-        colour = kWarn;
+        colour = theme_.accent;
     } else {
         switch (state_) {
         case SessionState::Live:
@@ -738,20 +706,20 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
                           snap_.diff_mode() ? "DIFF " : "",
                           snap_.has_snapshot() ? "  d diff  S drop" : "");
             note = line;
-            colour = snap_.diff_mode() ? kLeak : kDim;
+            colour = snap_.diff_mode() ? theme_.leak : theme_.dim;
             break;
         case SessionState::Exited:
             note = " TARGET EXITED   q quit  ? help  r reset"
                    "  hjkl/HJKL move  g/G ends  n/N chunk";
-            colour = kWarn;
+            colour = theme_.accent;
             break;
         case SessionState::Detached:
             note = " NOT ATTACHED   q quit  ? help";
-            colour = kDim;
+            colour = theme_.dim;
             break;
         }
     }
-    fb.text(0, h - 1, note, colour, kPanel);
+    fb.text(0, h - 1, note, colour, theme_.bg);
 
     /* Last, so the modal wins over every model layer while the footer remains
      * visible and truthful about the keys that can close it. */

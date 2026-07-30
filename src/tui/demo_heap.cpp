@@ -13,8 +13,8 @@ DemoHeap::DemoHeap() {
     grid_.set_bounds(kBase, kBase + kSpan);
 }
 
-void DemoHeap::fit(Rect area) {
-    fit_grid(grid_, area);
+void DemoHeap::fit(Rect area, bool half_block) {
+    fit_grid(grid_, area, half_block);
     map_.configure(grid_);
     /* A granularity change invalidates every aggregate, so replay what is
      * live rather than showing an empty map until the next allocation. */

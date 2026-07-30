@@ -276,7 +276,7 @@ void test_pulse_wave_starts_and_ends_where_the_fade_does() {
           "pulse: peaks in the middle");
     check(hv::pulse_wave(0.25f) > 0.0f && hv::pulse_wave(0.25f) < 1.0f &&
               std::fabs(hv::pulse_wave(0.25f) - hv::pulse_wave(0.75f)) < 1e-6f,
-          "pulse: a triangle, symmetric about the peak");
+          "pulse: a smooth curve, symmetric about the peak");
 }
 
 void test_states_get_the_colours_they_are_named_for() {

@@ -31,6 +31,7 @@
 #include "tui/framebuffer.h"
 #include "tui/renderer.h"
 
+#include <array>
 #include <cstdint>
 
 namespace hv {
@@ -65,9 +66,8 @@ struct LoopStats {
     FrameTiming last{};
     FrameTiming worst{};
 
-    /* Frames actually painted per second, averaged over the last second. Zero
-     * until the first second has elapsed. An idle heapviz reads 0 fps, which is
-     * the honest number: it is not drawing. */
+    /* Frames actually painted per second, smoothed across the last 30 loop
+     * frames. An idle heapviz trends to 0 fps: it is not drawing. */
     double fps = 0.0;
 };
 
@@ -195,9 +195,14 @@ private:
 
     std::uint64_t period_ns_ = 0;
 
-    /* fps is a rate, so it needs a window: frames drawn since this mark. */
-    std::uint64_t fps_mark_ns_    = 0;
-    std::uint64_t fps_mark_drawn_ = 0;
+    struct FpsSample {
+        std::uint64_t ns = 0;
+        std::uint64_t drawn = 0;
+    };
+    static constexpr std::size_t kFpsSamples = 30;
+    std::array<FpsSample, kFpsSamples> fps_samples_{};
+    std::size_t fps_next_ = 0;
+    std::size_t fps_count_ = 0;
 
     bool     input_open_ = true;
     LoopExit exit_       = LoopExit::Quit;

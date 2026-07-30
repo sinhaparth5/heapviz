@@ -43,6 +43,10 @@ promise about the ABI or the CLI surface.
 
 ### Added
 
+- M6 visual system: semantic dark/light themes (`--theme`), contrast-checked
+  text colours, responsive stacked or 60/40 panels, bracketed box chrome,
+  half-block map resolution, a four-weight density fallback, eased pulses,
+  30-frame FPS smoothing, and `--no-animation` for stable captures.
 - Working `LD_PRELOAD` interceptor: `malloc`, `free`, `calloc`, `realloc`,
   `posix_memalign`, `aligned_alloc`, `memalign`, `valloc`, and `pvalloc`, plus
   everything reaching them indirectly (`strdup`, `asprintf`, `getline`, C++

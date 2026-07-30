@@ -170,6 +170,13 @@ target_link_libraries(capabilities_test PRIVATE heapviz_core)
 add_test(NAME capabilities COMMAND capabilities_test)
 set_tests_properties(capabilities PROPERTIES TIMEOUT 60)
 
+# --- Semantic themes and responsive layout (M6.1 / M6.2) ------------------
+add_executable(theme_layout_test unit/theme_layout_test.cpp)
+heapviz_test_target(theme_layout_test)
+target_link_libraries(theme_layout_test PRIVATE heapviz_core)
+add_test(NAME theme_layout COMMAND theme_layout_test)
+set_tests_properties(theme_layout PROPERTIES TIMEOUT 60)
+
 # --- Differential ANSI streamer (M4.3) -------------------------------------
 add_executable(renderer_test unit/renderer_test.cpp)
 heapviz_test_target(renderer_test)

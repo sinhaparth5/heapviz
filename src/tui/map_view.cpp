@@ -17,7 +17,8 @@ namespace {
  * cell is packed", and an even split puts both boundaries where almost no cell
  * ever sits. A quarter full already reads as occupied. */
 constexpr float kFullFrom   = 0.66f;
-constexpr float kMediumFrom = 0.25f;
+constexpr float kDarkFrom   = 0.45f;
+constexpr float kMediumFrom = 0.18f;
 
 /* A left-to-right cursor that stops at the right edge of the legend rather than
  * at the right edge of the framebuffer.
@@ -56,13 +57,13 @@ private:
 
 } // namespace
 
-MapLayout map_layout(Rect area) noexcept {
+MapLayout map_layout(Rect area, bool show_legend) noexcept {
     MapLayout out;
     if (area.w <= 0 || area.h <= 0) return out;
 
     /* The legend is the first thing to go, because a map with no legend is
      * still a map. It only survives if a row is left for cells underneath. */
-    const bool legend = area.h >= 2;
+    const bool legend = show_legend && area.h >= 2;
     if (legend) out.legend = Rect{area.x, area.y, area.w, 1};
 
     const int cells_y = area.y + (legend ? 1 : 0);
@@ -89,9 +90,19 @@ bool fit_grid(Grid &g, Rect area) noexcept {
     return g.set_viewport(l.cells.w, l.cells.h);
 }
 
+bool fit_grid(Grid &g, Rect area, bool half_block, bool show_legend) noexcept {
+    const MapLayout l = map_layout(area, show_legend);
+    if (!l.valid) {
+        g.set_viewport(0, 0);
+        return false;
+    }
+    return g.set_viewport(l.cells.w, l.cells.h * (half_block ? 2 : 1));
+}
+
 MapView::MapView(Capabilities caps, const HeatPalette &p,
                  const HeatTimings &t) noexcept
-    : glyphs_(glyphs_for(caps)), ramp_(p, t), palette_(p) {}
+    : glyphs_(glyphs_for(caps)), ramp_(p, t), palette_(p),
+      unicode_(caps.unicode) {}
 
 char32_t MapView::glyph_for(const CellAggregate &a,
                             std::uint64_t cell_bytes) const noexcept {
@@ -104,6 +115,7 @@ char32_t MapView::glyph_for(const CellAggregate &a,
     const float d = static_cast<float>(a.live_bytes) /
                     static_cast<float>(cell_bytes);
     if (d >= kFullFrom)   return glyphs_.full;
+    if (d >= kDarkFrom)   return glyphs_.dark;
     if (d >= kMediumFrom) return glyphs_.medium;
     return glyphs_.light;
 }
@@ -161,7 +173,7 @@ void MapView::draw_legend(Framebuffer &fb, Rect r, const Grid &g) const noexcept
 
 void MapView::draw(Framebuffer &fb, Rect area, const HeatMap &map,
                    std::uint32_t now_ms) const noexcept {
-    const MapLayout l = map_layout(area);
+    const MapLayout l = map_layout(area, show_legend_);
     if (!l.valid) return;
 
     const Grid &g = map.grid();
@@ -171,7 +183,8 @@ void MapView::draw(Framebuffer &fb, Rect area, const HeatMap &map,
     /* The grid should have been sized by `fit_grid`, but a caller that drew
      * before reconfiguring gets a clipped map rather than cells landing in
      * whatever sits below this rectangle. */
-    const int rows = g.rows() < l.cells.h ? g.rows() : l.cells.h;
+    const int display_rows = half_block_ ? (g.rows() + 1) / 2 : g.rows();
+    const int rows = display_rows < l.cells.h ? display_rows : l.cells.h;
     const int cols = g.cols() < l.cells.w ? g.cols() : l.cells.w;
     const std::uint64_t cell_bytes = g.cell_bytes();
     const std::uint64_t row_bytes =
@@ -181,6 +194,7 @@ void MapView::draw(Framebuffer &fb, Rect area, const HeatMap &map,
 
     for (int row = 0; row < rows; ++row) {
         const int y = l.cells.y + row;
+        const int logical_row = half_block_ ? row * 2 : row;
 
         if (l.gutter_x >= 0) {
             /* With a RegionMap the grid coordinate is a packed offset, and an
@@ -192,7 +206,7 @@ void MapView::draw(Framebuffer &fb, Rect area, const HeatMap &map,
              *
              * Without one the coordinate is the address, and this is M3.1's
              * original offset-from-base. */
-            const std::uint64_t coord = g.offset_of_row(row);
+            const std::uint64_t coord = g.offset_of_row(logical_row);
             const RegionMap *rm = map.regions();
             const Span *span = rm != nullptr ? rm->span_at_flat(coord) : nullptr;
 
@@ -214,17 +228,30 @@ void MapView::draw(Framebuffer &fb, Rect area, const HeatMap &map,
             fb.text(l.gutter_x, y, label, ink, style_.bg);
         }
 
-        const auto base = static_cast<std::size_t>(row) *
+        const auto base = static_cast<std::size_t>(logical_row) *
                           static_cast<std::size_t>(g.cols());
         for (int col = 0; col < cols; ++col) {
             const std::size_t i = base + static_cast<std::size_t>(col);
             if (i >= map.cell_count()) return;
 
             const CellAggregate &a = map.at(i);
+            const Rgb top = animations_ ? ramp_.color(a, cell_bytes, now_ms)
+                                        : ramp_.settled(a, cell_bytes);
+            if (!half_block_) {
+                fb.put(l.cells.x + col, y,
+                       Cell{glyph_for(a, cell_bytes), top, style_.bg, kAttrNone});
+                continue;
+            }
+
+            Rgb bottom = style_.bg;
+            const std::size_t lower = i + static_cast<std::size_t>(g.cols());
+            if (lower < map.cell_count()) {
+                const CellAggregate &b = map.at(lower);
+                bottom = animations_ ? ramp_.color(b, cell_bytes, now_ms)
+                                     : ramp_.settled(b, cell_bytes);
+            }
             fb.put(l.cells.x + col, y,
-                   Cell{glyph_for(a, cell_bytes),
-                        ramp_.color(a, cell_bytes, now_ms), style_.bg,
-                        kAttrNone});
+                   Cell{glyphs_.half, top, bottom, kAttrNone});
         }
     }
 }
@@ -233,7 +260,7 @@ void MapView::draw_leaks(Framebuffer &fb, Rect area, const HeatMap &map,
                          const SnapshotDiff &diff) const noexcept {
     if (!diff.diff_mode()) return;
 
-    const MapLayout l = map_layout(area);
+    const MapLayout l = map_layout(area, show_legend_);
     if (!l.valid) return;
 
     const Grid &g = map.grid();
@@ -250,7 +277,8 @@ void MapView::draw_leaks(Framebuffer &fb, Rect area, const HeatMap &map,
         const auto i = static_cast<std::size_t>(cell);
         if (i >= map.cell_count()) continue;
 
-        const int row = g.row_of(i);
+        const int logical_row = g.row_of(i);
+        const int row = half_block_ ? logical_row / 2 : logical_row;
         const int col = g.col_of(i);
         if (row >= l.cells.h || col >= l.cells.w) continue; /* clipped map */
 
@@ -259,21 +287,23 @@ void MapView::draw_leaks(Framebuffer &fb, Rect area, const HeatMap &map,
         if (!fb.contains(x, y)) continue;
 
         Cell c = fb.at_back(x, y);
-        c.fg = style_.leak;
+        if (half_block_ && (logical_row & 1) != 0) c.bg = style_.leak;
+        else c.fg = style_.leak;
         fb.put(x, y, c);
     }
 }
 
 void MapView::draw_cursor(Framebuffer &fb, Rect area, const HeatMap &map,
                           const MapCursor &cur) const noexcept {
-    const MapLayout l = map_layout(area);
+    const MapLayout l = map_layout(area, show_legend_);
     if (!l.valid) return;
 
     const Grid &g = map.grid();
     if (!g.valid()) return;
 
     const std::size_t i = cur.index(g);
-    const int row = g.row_of(i);
+    const int logical_row = g.row_of(i);
+    const int row = half_block_ ? logical_row / 2 : logical_row;
     const int col = g.col_of(i);
     if (row >= l.cells.h || col >= l.cells.w) return; /* clipped map */
 

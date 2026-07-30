@@ -70,6 +70,8 @@ add_library(heapviz_core STATIC
   src/tui/terminal.cpp
   src/tui/framebuffer.cpp
   src/tui/capabilities.cpp
+  src/tui/theme.cpp
+  src/tui/layout.cpp
   src/tui/chunk_table.cpp
   src/tui/proc_maps.cpp
   src/tui/chunk_reader.cpp

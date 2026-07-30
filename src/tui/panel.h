@@ -41,6 +41,11 @@ int panel_text(Framebuffer &fb, Rect area, int dx, int dy, std::string_view s,
 int panel_text_right(Framebuffer &fb, Rect area, int dy, std::string_view s,
                      Rgb fg, Rgb bg, std::uint8_t attrs = kAttrNone) noexcept;
 
+/* Right-aligns a numeric value with a two-column inset. Digits, separators and
+ * hexadecimal digits use `number`; words and units use `dim`. */
+int panel_numeric_right(Framebuffer &fb, Rect area, int dy, std::string_view s,
+                        Rgb number, Rgb dim, Rgb bg) noexcept;
+
 /* The panel's top rule with its name inset, `── PANEL NAME ─────`. M6.3 owns
  * the chrome proper and will replace the rule with a box; this is the shape it
  * takes, drawn with what M4.2 already provides. */

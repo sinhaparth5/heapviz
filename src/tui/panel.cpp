@@ -6,6 +6,7 @@
 
 #include "tui/panel.h"
 
+#include <cctype>
 #include <cstdio>
 
 namespace hv {
@@ -30,19 +31,43 @@ int panel_text_right(Framebuffer &fb, Rect area, int dy, std::string_view s,
     return fb.text(area.x + dx, area.y + dy, s, fg, bg, attrs);
 }
 
+int panel_numeric_right(Framebuffer &fb, Rect area, int dy, std::string_view s,
+                        Rgb number, Rgb dim, Rgb bg) noexcept {
+    if (area.w <= 4 || dy < 0 || dy >= area.h) return 0;
+    const int room = area.w - 4;
+    if (static_cast<int>(s.size()) > room) return 0;
+
+    const int x = area.x + area.w - 2 - static_cast<int>(s.size());
+    const int written = fb.text(x, area.y + dy, s, dim, bg);
+    const bool hexadecimal = s.size() > 2 && s[0] == '0' && s[1] == 'x';
+    for (std::size_t i = 0; i < s.size(); ++i) {
+        const unsigned char c = static_cast<unsigned char>(s[i]);
+        const bool numeric = std::isdigit(c) != 0 || c == ',' || c == '.' ||
+                             c == '~' || (hexadecimal &&
+                             (c == 'x' || (c >= 'a' && c <= 'f') ||
+                              (c >= 'A' && c <= 'F')));
+        if (numeric)
+            fb.put(x + static_cast<int>(i), area.y + dy,
+                   Cell{static_cast<char32_t>(c), number, bg, kAttrNone});
+    }
+    return written;
+}
+
 void panel_rule(Framebuffer &fb, Rect area, std::string_view label, Rgb frame,
                 Rgb accent, Rgb bg) noexcept {
     if (area.w <= 0 || area.h <= 0) return;
 
-    fb.hline(area.x, area.y, area.w, U'─', frame, bg);
+    fb.box(area, BoxStyle::Light, frame, bg);
 
-    /* Inset two columns in, and only when the whole label fits with rule left
-     * either side of it. A label that reached the panel's edge would read as
-     * the neighbouring panel's title on a narrow terminal, which is worse than
-     * an unlabelled rule -- the rule at least does not claim anything. */
     if (label.empty()) return;
-    if (static_cast<int>(label.size()) + 4 > area.w) return;
-    panel_text(fb, area, 2, 0, label, accent, bg, kAttrBold);
+    if (static_cast<int>(label.size()) + 6 > area.w) return;
+
+    char title[96];
+    const int written = std::snprintf(title, sizeof title, "[%.*s]",
+                                      static_cast<int>(label.size()),
+                                      label.data());
+    if (written <= 0) return;
+    panel_text(fb, area, 2, 0, title, accent, bg, kAttrBold);
 }
 
 std::size_t format_count(char *buf, std::size_t n, std::uint64_t v) noexcept {

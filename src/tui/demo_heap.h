@@ -43,7 +43,7 @@ public:
 
     /* Re-bucket for a new drawing area and replay what is live, so a resize
      * shows the heap at the new granularity rather than an empty map. */
-    void fit(Rect area);
+    void fit(Rect area, bool half_block = false);
 
     /* One frame's worth of allocator traffic. Returns true if anything moved. */
     bool churn(std::uint32_t now_ms, unsigned ops);

@@ -52,6 +52,7 @@
 
 #include "tui/framebuffer.h"
 #include "tui/heatmap.h"
+#include "tui/theme.h"
 
 #include <array>
 #include <cstdint>
@@ -85,11 +86,11 @@ Rgb   lerp_oklab(Rgb from, Rgb to, float t) noexcept;
  * are a struct rather than constants so M6.1's `--theme` can supply a different
  * set without any of the aging logic knowing. */
 struct HeatPalette {
-    Rgb fresh    = 0x004EC94E; /* malloc   - a new allocation             */
-    Rgb freed    = 0x00E01B24; /* freed    - memory that just went away   */
-    Rgb settled  = 0x003584E4; /* active   - a long-lived allocation      */
-    Rgb overhead = 0x00F6D32D; /* overhead - chunk headers, no payload    */
-    Rgb empty    = 0x002A2A2A; /* unalloc  - address space nobody owns    */
+    Rgb fresh    = dark_theme().malloc;
+    Rgb freed    = dark_theme().freed;
+    Rgb settled  = dark_theme().active;
+    Rgb overhead = dark_theme().overhead;
+    Rgb empty    = dark_theme().unalloc;
 };
 
 constexpr HeatPalette kDefaultPalette{};
@@ -106,9 +107,9 @@ constexpr HeatPalette kDefaultPalette{};
 constexpr float kPulsePeak    = 0.35f;
 constexpr float kDensityFloor = 0.65f;
 
-/* A triangle wave over [0,1]: zero at both ends, peaking in the middle. Ending
- * where it starts is what lets the pulse be joined to the fade that follows
- * without a visible step. */
+/* A symmetric cubic ease-out over [0,1]: zero at both ends, peaking smoothly
+ * in the middle. Ending where it starts joins it to the following fade without
+ * a visible step. */
 float pulse_wave(float u) noexcept;
 
 /* Whether this cell's colour is still changing with the clock, i.e. whether it
