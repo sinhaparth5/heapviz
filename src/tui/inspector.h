@@ -133,6 +133,14 @@ struct InspectorStyle {
 class ChunkInspector {
 public:
     void set_style(const InspectorStyle &s) noexcept { style_ = s; }
+
+    /* True in snapshot mode (M2.5), where `alloc_ms` is when heapviz first saw
+     * the address rather than when the target allocated it -- a chunk header
+     * carries no timestamp, so the real age is not knowable from outside. The
+     * figure is then a floor, and a panel labelling it "Lifetime ... (so far)"
+     * would report a chunk that has been alive for an hour as three seconds
+     * old. The word after the number says which question was answered. */
+    void set_ages_from_first_sighting(bool yes) noexcept { first_seen_ = yes; }
     const InspectorStyle &style() const noexcept { return style_; }
 
     /* Re-derives the selection for the cell the cursor is on, if anything could
@@ -174,6 +182,7 @@ private:
     void rescan(const ChunkTable &table, const HeatMap &map, std::size_t cell);
 
     InspectorStyle           style_{};
+    bool                     first_seen_ = false;
     std::vector<ChunkDetail> found_;
     std::size_t              total_    = 0;
     std::size_t              pos_      = 0;

@@ -76,7 +76,7 @@ int score_chain(const std::uint8_t *block, std::size_t avail, std::size_t off,
         std::memcpy(&size_field, block + off + sizeof(std::uint64_t),
                     sizeof size_field);
         const std::uint64_t size = size_field & ~std::uint64_t{7};
-        if ((size & (kWalkAlign - 1)) != 0 ||
+        if (size < kWalkMinChunk || (size & (kWalkAlign - 1)) != 0 ||
             size > region_span)
             break;
         off += static_cast<std::size_t>(size);
@@ -225,7 +225,7 @@ bool HeapWalker::walk_region(const Region &r, std::vector<WalkedChunk> &out,
 
             /* Anything that fails these is not a chunk header, and following it
              * would resynchronise the walk onto noise. The chain ends here. */
-            if ((size & (kWalkAlign - 1)) != 0 ||
+            if (size < kWalkMinChunk || (size & (kWalkAlign - 1)) != 0 ||
                 here + size > end || size > end - start) {
                 block_ok = false;
                 break;

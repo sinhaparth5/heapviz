@@ -229,6 +229,13 @@ bool HeapApp::update(std::uint64_t now_ns) {
         }
     }
 
+    /* After the scan and the repack, because the walk is driven by the region
+     * list and a stale one would have it reading an arena that has since been
+     * unmapped; before everything below, because they all measure the table
+     * this replaces. Inert unless snapshot mode is on. */
+    const bool walked = snapshot(now_ms_);
+    if (walked) changed = true;
+
     if (geometry_dirty_ && !bounds_.empty() && width_ > 0) {
         refit(width_, height_);
         changed = true;
@@ -313,6 +320,11 @@ bool HeapApp::repack() noexcept {
  * The cursor walks the table's slots and picks up where it left off.
  */
 bool HeapApp::enrich(std::uint32_t now_ms) noexcept {
+    /* Never in snapshot mode. The walk has already read every header this would
+     * read, and the figure it produces would be nonsense besides: overhead is
+     * `usable - request`, and snapshot mode has no request to subtract from --
+     * it reports the two as equal precisely because it does not know. */
+    if (snapshot_mode_) return false;
     if (!reader_.available() || state_ != SessionState::Live) return false;
     if (static_cast<std::uint32_t>(now_ms - enrich_last_ms_) < kEnrichIntervalMs)
         return false;
@@ -376,6 +388,110 @@ bool HeapApp::enrich(std::uint32_t now_ms) noexcept {
             changed = true;
     }
     return changed;
+}
+
+void HeapApp::enable_snapshots() {
+    snapshot_mode_ = true;
+    walker_.emplace(session_.pid());
+
+    /* Live from the start. There is no ring to claim and therefore no attach to
+     * succeed, so the only thing that can end this session is the target
+     * exiting -- which `update` already checks for by pid. */
+    state_ = SessionState::Live;
+
+    /* Nothing here can produce a cumulative figure, and the panel has to say so
+     * rather than show a zero. Same for the inspector's lifetime, which in this
+     * mode counts from heapviz's first sighting rather than from the
+     * allocation -- a floor, and labelled as one. */
+    metrics_.set_cumulative_known(false);
+    inspect_.set_ages_from_first_sighting(true);
+}
+
+/* One snapshot pass: read the target's heap and replace the model with it.
+ *
+ * The shape is the opposite of the event path. `apply` folds a delta into a
+ * model it trusts; this discards the model and rebuilds it, because a walk
+ * carries no history and cannot say which of the differences between two walks
+ * was an allocation and which was a free. The live set is the only thing a
+ * chunk header can prove, so the live set is all this claims.
+ *
+ * Cost is one pass over the table to carry timestamps forward, then a clear and
+ * a re-insert -- O(live set) at 4 Hz, which is around 2.5 ms for 100k chunks.
+ * That is affordable at this tick and would not be at frame rate, which is part
+ * of why the tick exists.
+ */
+bool HeapApp::snapshot(std::uint32_t now_ms) noexcept {
+    if (!snapshot_mode_ || !walker_.has_value()) return false;
+    if (state_ != SessionState::Live || paused_) return false;
+    if (walked_once_ &&
+        static_cast<std::uint32_t>(now_ms - walk_last_ms_) < walk_interval_ms_)
+        return false;
+    walk_last_ms_ = now_ms;
+    walked_once_  = true;
+
+    /* Timed rather than estimated from the chunk count, because the two halves
+     * of the cost scale with different things -- the walk with bytes of heap,
+     * the rebuild with number of chunks -- and a target with one huge arena and
+     * a target with a million tiny chunks are nothing alike. */
+    const std::uint64_t began_ns = monotonic_ns();
+
+    const WalkResult r = walker_->walk(scanner_.regions(), walked_);
+    walk_ = r;
+
+    /* Neither of these can be fixed by walking again, and both leave `walked_`
+     * empty -- so replacing the model with it would clear a display that is
+     * still the last true thing heapviz knows. The header reports the status;
+     * what is on screen stays. */
+    if (r.status == WalkStatus::Denied || r.status == WalkStatus::TargetGone) {
+        walk_cost_ms_     = 0;
+        walk_interval_ms_ = kSnapshotIntervalMs;
+        return true;
+    }
+
+    /* First-seen times, read out of the outgoing table before it is cleared,
+     * because it is the only record of them. A chunk header has no timestamp,
+     * so "when heapviz first saw this address" is the only clock available --
+     * and without carrying it, every cell would re-flash as newly allocated
+     * four times a second and the heat would mean nothing at all. */
+    walked_first_ms_.clear();
+    walked_first_ms_.reserve(walked_.size());
+    for (const WalkedChunk &c : walked_) {
+        const Chunk *prev = table_.find(c.user_ptr);
+        walked_first_ms_.push_back(
+            prev != nullptr && prev->state == kChunkLive ? prev->alloc_ms
+                                                         : now_ms);
+    }
+
+    table_.clear();
+    live_       = 0;
+    live_bytes_ = 0;
+
+    for (std::size_t i = 0; i < walked_.size(); ++i) {
+        const WalkedChunk &c = walked_[i];
+        const std::uint32_t usable = clamp_u32(c.usable);
+
+        /* Request and usable are the same number here, and deliberately. The
+         * request is what the program asked for, which the allocator rounded
+         * away before writing the header -- so it is not recoverable from
+         * outside and heapviz must not invent it. Passing usable for both makes
+         * the overhead figure read zero, which is the truthful answer: heapviz
+         * did not see the call. */
+        table_.insert_live(c.user_ptr, usable, usable, walked_first_ms_[i], 0);
+        ++live_;
+        live_bytes_ += c.usable;
+    }
+
+    /* The incremental path is not available here -- a walk is a new live set,
+     * not a delta -- so the rebuild has to be asked for outright. Inside the
+     * timed region deliberately: it is fully half of what a pass costs, and
+     * pacing against the walk alone would be pacing against half the truth.
+     * A no-op until the grid has been configured, which `refit` does. */
+    map_.rebuild(table_);
+
+    walk_cost_ms_ = clamp_u32((monotonic_ns() - began_ns) / 1000000ull);
+    walk_interval_ms_ =
+        std::max(kSnapshotIntervalMs, walk_cost_ms_ * kSnapshotDutyFactor);
+    return true;
 }
 
 void HeapApp::refit(int, int) {
@@ -572,9 +688,16 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
 
     /* Row 0: what is being watched. */
     const char *comm = session_.comm();
-    std::snprintf(line, sizeof line, " heapviz v0.1   [PID: %d%s%s]",
+    std::snprintf(line, sizeof line, " heapviz v0.1   [PID: %d%s%s]%s",
                   session_.pid(), comm[0] != '\0' ? " - " : "",
-                  comm[0] != '\0' ? comm : "");
+                  comm[0] != '\0' ? comm : "",
+                  /* Named on the title row rather than tucked into a status
+                   * line, because every figure below it means something
+                   * different in this mode: no events, no history, and a live
+                   * set that is a sample rather than a running total. A user who
+                   * does not know which mode they are in will read the numbers
+                   * as the other one's. */
+                  snapshot_mode_ ? "   SNAPSHOT - sampled, no events" : "");
     fb.text(0, 0, line, theme_.title, theme_.bg, kAttrBold);
 
     std::snprintf(line, sizeof line, "%.0f fps ", stats.fps);
@@ -665,7 +788,23 @@ void HeapApp::draw(Framebuffer &fb, const LoopStats &stats) {
      * reached, and presenting a partly-corrected total as though it were the
      * whole truth is the kind of quiet lie this tool exists not to tell. */
     const char *why = reader_.hint();
-    if (why != nullptr) {
+    if (snapshot_mode_) {
+        /* Snapshot mode reports what it could not see, not what it measured.
+         * The number that matters here is `opaque_bytes`: a runtime that mmaps
+         * its own heap -- V8, Bun, the JVM -- has no chunk headers to follow, so
+         * "4 MB live" against a 600 MB process is a correct answer to a question
+         * the user did not ask. Saying how much is unreadable is what stops the
+         * live figure being read as the whole truth. */
+        const char *wh = walker_.has_value() ? walker_->hint() : nullptr;
+        if (wh != nullptr) {
+            std::snprintf(line, sizeof line, " snapshot: %s ", wh);
+        } else {
+            char human[32];
+            format_byte_size(human, sizeof human, walk_.opaque_bytes);
+            std::snprintf(line, sizeof line, " snapshot: %s not readable%s ",
+                          human, walk_.truncated ? ", truncated" : "");
+        }
+    } else if (why != nullptr) {
         std::snprintf(line, sizeof line, " overhead: %s ", why);
     } else if (refined_ != 0) {
         std::snprintf(line, sizeof line, " overhead: %llu B exact over %llu chunks ",

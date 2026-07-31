@@ -23,6 +23,19 @@
  * leak diff are built on. Two walks can be compared by address, which is a
  * weaker thing than comparing by time, and the caller has to say so.
  *
+ * It over-reports small frees, and the amount is not bounded. A chunk is judged
+ * in use by its successor's PREV_INUSE bit, which is what the allocator itself
+ * consults -- but glibc does not clear it when a small chunk goes into the
+ * tcache or a fastbin, because those bins are private caches that intend to
+ * hand the chunk straight back out. Such a chunk is free to the program and
+ * in-use to anything reading the heap from outside, including this. There is no
+ * fix that stays outside the process: the tcache lives in the target's own TLS,
+ * so finding it means knowing where each thread's `tcache_perthread_struct` is,
+ * which is a glibc-version-specific hunt through thread-local storage. The
+ * bound is 64 chunks per size class per thread, so on a heap doing heavy small
+ * allocation the live figure reads high, and on one doing large allocation it
+ * is exact.
+ *
  * It also sees only what ptmalloc manages. A runtime that reserves its heap with
  * `mmap` and sub-allocates inside it -- V8, Bun, the JVM, most Python
  * allocators -- is opaque here: the reservation is one region and its contents

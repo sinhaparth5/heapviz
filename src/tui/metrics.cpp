@@ -145,14 +145,18 @@ void Metrics::draw(Framebuffer &fb, Rect area) const noexcept {
      * attached, whether or not it still holds it. The human figure leads and
      * the exact count follows, because the question this answers is "how much
      * churn has there been" and nobody reads that in bytes. */
-    format_byte_size(human, sizeof human, total_bytes_);
-    if (wide) {
-        format_count(num, sizeof num, total_bytes_);
-        std::snprintf(line, sizeof line, "%s (%s B)", human, num);
+    if (!cumulative_known_) {
+        field("Allocated", "not observable", style_.dim, false);
     } else {
-        std::snprintf(line, sizeof line, "%s", human);
+        format_byte_size(human, sizeof human, total_bytes_);
+        if (wide) {
+            format_count(num, sizeof num, total_bytes_);
+            std::snprintf(line, sizeof line, "%s (%s B)", human, num);
+        } else {
+            std::snprintf(line, sizeof line, "%s", human);
+        }
+        field("Allocated", line, style_.ink);
     }
-    field("Allocated", line, style_.ink);
 
     /* Active chunks, with the bytes they hold beside them. The two belong on
      * one row: a count with no size cannot distinguish a million small
@@ -211,7 +215,18 @@ void Metrics::draw(Framebuffer &fb, Rect area) const noexcept {
         ++dy;
     }
 
-    /* The ring, and the caveat. */
+    /* The ring, and the caveat -- unless there is no ring. Snapshot mode reads
+     * the heap directly and never claims a segment, so a capacity of zero here
+     * is a mode rather than an empty buffer, and "0% of 0 / 0 dropped" would be
+     * three figures about a thing that does not exist. The row is given to the
+     * reason instead. */
+    if (live_.ring_capacity == 0) {
+        panel_text(fb, area, 2, dy, "Sampling", style_.dim, style_.bg);
+        panel_text(fb, area, kValueCol, dy, "read from target, no event stream",
+                   style_.dim, style_.bg);
+        return;
+    }
+
     const unsigned pct = ring_pct();
     Rgb ring_colour = style_.good;
     switch (pressure()) {

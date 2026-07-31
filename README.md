@@ -121,9 +121,12 @@ transitively (`strdup`, `asprintf`, `getline`, C++ `operator new`).
 | **Build** | CMake 3.20+, a C++20 compiler (GCC 11+ / Clang 14+) |
 
 **Known limits, stated up front:** `LD_PRELOAD` is ignored for setuid binaries
-and has nothing to hook in statically linked ones. Chunk-header inspection
-needs same-uid access or `CAP_SYS_PTRACE`, and `yama/ptrace_scope=1` will block
-it. heapviz degrades to interceptor-only data rather than failing.
+and has nothing to hook in statically linked ones — and it binds when a process
+loads, so it can never be added to a process that is already running. Those
+targets get snapshot mode instead (see [Two modes](#two-modes-and-which-one-you-get)),
+which reads the heap from outside and therefore needs same-uid access or
+`CAP_SYS_PTRACE`; the default `yama/ptrace_scope=1` blocks it for anything
+heapviz did not start itself. heapviz names the fix rather than failing quietly.
 
 ---
 
@@ -141,7 +144,55 @@ Build-tree usage:
 
 # or attach to something already running libheapviz.so
 ./build/debug/heapviz 41820
+
+# or point it at any process at all — see "Two modes" below
+./build/debug/heapviz $(pgrep -n my_server)
 ```
+
+### Two modes, and which one you get
+
+heapviz picks automatically. You do not choose, but you do need to know which
+one you are in, because the numbers mean different things — so the title row
+says.
+
+**Live mode** happens when the target is running `libheapviz.so`: either heapviz
+launched it, or you started it with the library preloaded. Every allocation and
+free is recorded as it happens, which is what makes allocation ages, the
+cumulative total, and the leak diff against a snapshot possible.
+
+**Snapshot mode** happens for everything else, and it is what makes `heapviz
+<pid>` useful on a process you cannot restart. `LD_PRELOAD` binds when a process
+loads, so a program that is already running has its `malloc` wired straight to
+libc and nothing can retrofit the interceptor onto it. Instead heapviz reads the
+target's heap directly — glibc writes a header before every allocation, and the
+headers chain — and rebuilds the picture a few times a second.
+
+|  | Live | Snapshot |
+|---|---|---|
+| Needs the target restarted | yes | **no** |
+| Live set, sizes, map, fragmentation | yes | yes |
+| Allocation age / heat by age | yes | by when heapviz first saw it |
+| Cumulative "Allocated", leak diff | yes | not observable |
+| Sees non-`malloc` heaps (Node, JVM…) | no | no, but says how much it missed |
+
+Two things to expect in snapshot mode:
+
+- **It needs permission to read the process.** On most distributions
+  `kernel.yama.ptrace_scope` is `1`, which permits it only for programs heapviz
+  started itself. If the map is empty, heapviz names the fix: either
+  `sudo sysctl -w kernel.yama.ptrace_scope=0`, or grant the binary the
+  capability once with `sudo setcap cap_sys_ptrace+ep /path/to/heapviz`.
+- **It reads glibc's allocator, and not every program uses it for everything.**
+  A runtime that reserves its heap in one big `mmap` and sub-allocates inside it
+  — Node, Bun, the JVM, some Python builds — has no chunk headers to follow, so
+  most of its memory is invisible here. heapviz prints how many bytes it could
+  not read beside the ones it could, so a small live figure against a large
+  process is never mistaken for the whole story.
+- **Small frees can read as still-live.** A chunk in glibc's tcache or a fastbin
+  keeps the bit that marks it in use, because glibc means to hand it straight
+  back out. From outside the process there is no way to tell. It is bounded at
+  64 chunks per size class per thread, so it shows up on heaps doing heavy small
+  allocation and not on ones doing large.
 
 When heapviz launches a target, it owns the current terminal for its TUI.
 Target stdin is therefore `/dev/null`, and target stdout/stderr go to the

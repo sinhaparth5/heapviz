@@ -187,6 +187,15 @@ public:
         gap_known_   = known;
     }
 
+    /* False in snapshot mode (M2.5), where there is no event stream to count.
+     * A cumulative total can only be accumulated from allocations as they
+     * happen; a heap walk sees the live set and nothing about what came before
+     * it. Printing 0 B beside a live 500 MB heap would read as "this program
+     * has never allocated anything", which is the same class of lie as
+     * reporting a zero largest hole -- so the field says so instead. */
+    void set_cumulative_known(bool known) noexcept { cumulative_known_ = known; }
+    bool cumulative_known() const noexcept { return cumulative_known_; }
+
     std::uint64_t total_bytes()  const noexcept { return total_bytes_; }
     std::uint64_t total_allocs() const noexcept { return total_allocs_; }
     std::uint64_t peak_bytes()   const noexcept { return peak_bytes_; }
@@ -217,6 +226,7 @@ private:
     std::uint32_t peak_ms_      = 0;
     std::uint64_t largest_gap_  = 0;
     bool          gap_known_    = false;
+    bool          cumulative_known_ = true;
     int           frag_pct_     = -1;
 };
 

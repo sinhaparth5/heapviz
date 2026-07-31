@@ -18,14 +18,14 @@ this document is the record; nothing below should send a reader looking for it.
 |---|-----------|-------|--------|------|
 | M0 | Scaffold & shared ABI | build, layout, IPC contract | `[x]` | 19 / 19 |
 | M1 | Zero-overhead interceptor | `libheapviz.so` | `[x]` | 38 / 39 |
-| M2 | Kernel & memory parsing | `/proc`, ptmalloc headers | `[x]` | 20 / 20 |
+| M2 | Kernel & memory parsing | `/proc`, ptmalloc headers, external walk | `[x]` | 31 / 32 (1 cut) |
 | M3 | Sparse address representation | grid, hash table, aging | `[x]` | 24 / 24 |
 | M4 | ANSI terminal engine | raw mode, double buffer, diff | `[x]` | 34 / 34 |
 | M5 | Interactivity & analysis | cursor, frag, snapshots | `[x]` | 32 / 33 (1 cut) |
 | M6 | Visual polish | the *beautiful* part | `[x]` | 20 / 20 |
 | M7 | Hardening & release | perf, tests, docs, packaging | `[ ]` | 0 / 23 |
 
-**Total: 187 / 212**
+**Total: 198 / 224**
 
 Update the counts when you tick boxes. If a count drifts from reality, the
 tracker is worthless. Keep it honest.
@@ -491,6 +491,127 @@ in a screenful of hole. That was measured, not predicted.
       rather than avoidable, since those cells now describe memory that is no
       longer at that offset. `RegionMap::repacks()` and `HeatMap::rebuilds()`
       are both exposed so the frequency can be measured rather than guessed at.
+
+### M2.5 Profiling a process that was already running
+
+Everything above M2.4 assumes the target was started by heapviz, or at least
+started with `libheapviz.so` in its `LD_PRELOAD`. That assumption turned out to
+be most of the tool's usability: `LD_PRELOAD` interposition binds when a process
+loads, so a program that is already running has its `malloc` calls wired
+directly to libc and nothing heapviz does afterwards can redirect them. Until
+this task, `heapviz <pid>` on any ordinary process printed "target is not
+running libheapviz.so" and exited -- which is true, and useless, and meant the
+tool could only ever be pointed at processes the user was willing to restart.
+
+The heap can still be *read*. glibc writes a header before every allocation and
+those headers chain across the region, so the live set is recoverable from
+outside with `process_vm_readv` and no injection at all. That is strictly less
+than the event stream -- there are no timestamps in a heap, so this can never
+support M3.4's aging by allocation time or M5.5's leak diff -- but a live set,
+a size distribution and a fragmentation figure are most of what the map shows.
+
+- [x] `HeapWalker` (`src/tui/heap_walker.cpp`): follow the ptmalloc chunk chain
+      across every allocatable region and recover the live set. A chunk is in
+      use when its *successor's* PREV_INUSE bit says so, which is why the walk
+      emits one chunk behind where it is reading and never emits the trailing
+      one -- with no successor to consult, the top chunk is free space by
+      definition. Reads are per 256 KiB block rather than per chunk: the naive
+      version is a syscall per allocation, which is 200,000 of them on the heap
+      this was measured against. Verified exact at 100, 1k, 10k, 100k and 200k
+      live chunks -- 200,000 found of 200,000 allocated.
+- [x] Find the chain start rather than assuming it. The main arena's first chunk
+      is at offset zero of `[heap]`, but a thread arena begins with glibc's
+      `heap_info`, and the arena's first mapping carries a `malloc_state` after
+      it -- a few kilobytes whose size depends on the glibc build. Hardcoding
+      either `sizeof` is wrong on the next glibc and wrong *silently*: the walk
+      starts mid-structure, finds no chain, and reports the arena as opaque,
+      which looks exactly like a runtime's own mmap'd heap. `find_chain_start`
+      scores every 16-byte-aligned candidate in the first 8 KiB by how far its
+      chain runs and takes the best, which is self-validating and costs one
+      already-performed read. Before this, a four-thread `churn` walked to 5
+      chunks and 39 MB opaque; after, 3972 chunks.
+- [x] Bound every walk, in blocks and in chunks, and report `truncated` when a
+      bound is hit. A torn header carrying a size of 32 across a 1 GiB region is
+      33 million iterations, which from the outside is indistinguishable from a
+      hang. The minimum-size check is the load-bearing one: removing it hangs
+      `heap_walker_test` outright, which is how it was confirmed to be doing
+      something. The alignment and end-of-region checks are defense in depth --
+      removing them left the suite green, and that is written down here rather
+      than dressed up as a guarantee.
+- [x] Report what could not be read, in `WalkResult::opaque_bytes`. A runtime
+      that reserves its heap with `mmap` and sub-allocates inside it -- V8, Bun,
+      the JVM -- has no chunk headers to follow, and the region is opaque in
+      full. Reporting "4 MB live" for a 622 MB Bun process is a correct answer
+      to the question this asks and a badly misleading answer to the question
+      the user had, so the header prints the unreadable figure beside it.
+- [x] Wire it into the binary: `heapviz <pid>` falls back to snapshot mode when
+      there is no segment, instead of failing. `RingSession::observe` adopts the
+      pid without a ring, so every ring path in `HeapApp` stays on its existing
+      "not attached" branch and the difference is confined to
+      `HeapApp::snapshot`. A launched target that reaches the same state lands
+      here too -- a static binary, or a wrapper that scrubs the environment --
+      because the exec failure is already diagnosed separately, so arriving here
+      means the target really is running and really is uninstrumented.
+- [x] Cut the attach timeout for a pid heapviz did not start, from 3 s to
+      `kProbeTimeoutMs` (500 ms). The long timeout exists to cover the gap
+      between fork and the interceptor's constructor; a process that was already
+      running has no such gap, so waiting three seconds only delays snapshot
+      mode by three seconds of blank terminal.
+- [x] Age cells from when heapviz first saw an address, not from when the target
+      allocated it -- which is unknowable. The first-seen time is carried across
+      walks out of the outgoing chunk table, which is the only record of it.
+      Without that the whole map re-flashes as newly allocated on every tick and
+      the heat means nothing.
+- [x] Pace the pass against what it costs. A pass is a walk plus a full table
+      replacement plus a full cell rebuild, and all three scale with the live
+      set: 85 ms on a 200k-chunk heap, measured. The next pass therefore waits
+      `kSnapshotDutyFactor` (8) times the last one's cost, bounding the work to
+      an eighth of the frame thread whatever the heap turns out to be. Large
+      heaps lose refresh rate, which is the right thing to give up -- a
+      stuttering cursor reads as broken where a map sampling twice a second does
+      not -- and the epilogue says so when the backoff engages.
+- [x] Say which mode is on, on the title row, and drop the figures that have no
+      source. There is no event stream, so `Metrics`' cumulative total has
+      nothing to accumulate: `set_cumulative_known(false)` makes the panel print
+      "not observable" rather than 0 B, which beside a live 500 MB heap would
+      read as "this program has never allocated". Same rule as M5.4's largest
+      hole. The enrichment pass is switched off for the matching reason -- it
+      computes `usable - request`, and snapshot mode has no request.
+- [x] Name the permission failure rather than reporting an empty heap.
+      `process_vm_readv` needs the same uid, and the default
+      `ptrace_scope = 1` permits it only against a descendant, so EPERM against
+      an arbitrary pid is the common case and not an exotic one. The status line
+      and the exit summary both name `ptrace_scope` and give the two fixes
+      (`sysctl kernel.yama.ptrace_scope=0`, or `setcap cap_sys_ptrace+ep` on the
+      binary, printed with the binary's real path from `/proc/self/exe`).
+- [x] Tests. `heap_walker` (unit, injected reader) covers the torn header, the
+      free chunk, the late-starting chain, the chunk straddling a block
+      boundary, the zero size that would stall the walk, the PROT_NONE
+      reservation that must not be read, and the two failure statuses -- all
+      against memory the test wrote, so it can only show the walk is
+      self-consistent. `heap_walk_live` (integration) is where the belief that
+      ptmalloc actually looks like this is held: it forks a child, lets glibc
+      lay out a real heap, and recovers it from outside. It is skipped under
+      ASan because ASan replaces the allocator, so the child's chunks carry
+      ASan's headers and there is no ptmalloc chain to find -- a different
+      reason from the preload tests' and worth not conflating.
+- [-] Recover the request size, so overhead means something in snapshot mode.
+      **Cut:** it is not recoverable. The allocator rounds the request away
+      before writing the header, and nothing downstream remembers it. Snapshot
+      mode reports usable as the request, which makes overhead read zero -- the
+      truthful answer, since heapviz did not see the call. M2.2's enrichment
+      pass stays off for the same reason rather than being pointed at a
+      fabricated figure.
+
+**Small frees read as live, and the amount is not bounded.** A chunk going into
+the tcache or a fastbin keeps its PREV_INUSE bit, because glibc intends to hand
+it straight back out and those bins are private caches. Such a chunk is free to
+the program and in use to anything reading from outside. The fix would mean
+locating each thread's `tcache_perthread_struct` in the target's TLS, which is a
+glibc-version-specific hunt and squarely outside what this can do without
+injecting anything. The bound is 64 chunks per size class per thread, so a heap
+doing heavy small allocation reads high and one doing large allocation is exact.
+This is a limitation of the approach, not a bug to be fixed later.
 
 ---
 

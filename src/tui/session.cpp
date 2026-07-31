@@ -155,6 +155,26 @@ AttachStatus RingSession::attach(int pid, int timeout_ms) {
     }
 }
 
+void RingSession::observe(int pid) noexcept {
+    pid_ = pid;
+    comm_[0] = '\0';
+
+    char path[64];
+    std::snprintf(path, sizeof path, "/proc/%d/comm", pid);
+    const int fd = ::open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return;
+
+    const ssize_t n = ::read(fd, comm_, sizeof comm_ - 1);
+    ::close(fd);
+    if (n <= 0) { comm_[0] = '\0'; return; }
+
+    comm_[n] = '\0';
+    /* /proc appends a newline the ring header does not, and the title bar is
+     * one line: a stray newline in it would push the rest of the header off. */
+    for (char &c : comm_)
+        if (c == '\n') { c = '\0'; break; }
+}
+
 void RingSession::detach() noexcept {
     if (ring_ == nullptr) return;
     hv_ring_release(ring_, static_cast<std::uint32_t>(::getpid()));

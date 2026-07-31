@@ -48,6 +48,17 @@ namespace hv {
  * short enough that a wrong `--pid` is answered rather than waited on. */
 constexpr int kAttachTimeoutMs = 3000;
 
+/* The timeout for attaching to a pid heapviz did not start.
+ *
+ * `kAttachTimeoutMs` is generous because a launched target is still running its
+ * own static initialisers and the segment does not exist yet. A process that was
+ * already running has no such gap: the interceptor publishes its segment from a
+ * constructor, so either it did that long ago or it is not preloaded at all and
+ * never will be. Waiting three seconds to learn that is three seconds of a
+ * blank terminal before snapshot mode starts, for information that was
+ * available immediately. */
+constexpr int kProbeTimeoutMs = 500;
+
 enum class AttachStatus : std::uint8_t {
     Ok,
     NoSegment,      /* nothing appeared: not preloaded, or the wrong pid    */
@@ -76,6 +87,17 @@ public:
      * segment yet, and the alternative -- an inotify watch on /dev/shm -- is a
      * lot of machinery for a wait measured in milliseconds. */
     AttachStatus attach(int pid, int timeout_ms = kAttachTimeoutMs);
+
+    /* Adopts a pid without a ring: there is no segment and there never will be
+     * one, because the target was not started under the interceptor. Everything
+     * that reads the ring keeps returning zero and `attached()` stays false --
+     * which is what makes this safe to hand to `HeapApp`, whose drain path
+     * already returns early on a session that is not attached.
+     *
+     * The identity still has to come from somewhere, so `comm` is read from
+     * /proc rather than from the ring header. That is the only difference in
+     * what the title bar can say, and it is not one a user can see. */
+    void observe(int pid) noexcept;
 
     /* Releases the claim and unmaps. Idempotent, and the destructor calls it:
      * a claim that outlives its consumer locks the ring against every future

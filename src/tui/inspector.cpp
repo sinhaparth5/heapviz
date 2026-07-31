@@ -282,9 +282,11 @@ void ChunkInspector::draw(Framebuffer &fb, Rect area, const Grid &g,
     const std::uint32_t end_ms =
         d.status == ChunkStatus::Freed ? d.free_ms : now_ms;
     const std::uint32_t ms = end_ms > d.alloc_ms ? end_ms - d.alloc_ms : 0;
+    const char *qualifier = d.status == ChunkStatus::Freed ? "(lived)"
+                            : first_seen_                  ? "(since seen)"
+                                                           : "(so far)";
     std::snprintf(line, sizeof line, "%.1f s %s",
-                  static_cast<double>(ms) / 1000.0,
-                  d.status == ChunkStatus::Freed ? "(lived)" : "(so far)");
+                  static_cast<double>(ms) / 1000.0, qualifier);
     field("Lifetime", line, style_.ink, true);
 
     /* How crowded the cell is, right-aligned on the status row. A cell is a

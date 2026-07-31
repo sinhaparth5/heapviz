@@ -40,6 +40,7 @@
 #include "tui/cursor.h"
 #include "tui/event_loop.h"
 #include "tui/fragmentation.h"
+#include "tui/heap_walker.h"
 #include "tui/heatmap.h"
 #include "tui/inspector.h"
 #include "tui/layout.h"
@@ -52,6 +53,7 @@
 #include "tui/theme.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -88,6 +90,32 @@ constexpr std::uint32_t kEnrichIntervalMs = 250;
  * cost of a false negative is a user staring at a frozen map with no idea why. */
 constexpr std::uint32_t kInteractiveExitMs = 3000;
 
+/* How often the snapshot mode re-walks the target's heap.
+ *
+ * A walk is a syscall per 256 KiB of heap and a full rebuild of the chunk table
+ * and every cell, so it is far too expensive to run per frame -- and pointless
+ * at that rate, since it is a *sample* rather than a stream and nothing between
+ * two samples is observable anyway. 4 Hz is the same tick the fragmentation and
+ * leak passes already use, and is fast enough that the display tracks a heap
+ * being watched by a human. */
+constexpr std::uint32_t kSnapshotIntervalMs = 250;
+
+/* The share of the frame thread a snapshot pass is allowed to occupy.
+ *
+ * A pass is not incremental: it reads the heap, replaces the chunk table and
+ * rebuilds every cell, and all three scale with the live set. Measured against
+ * a 200k-chunk child it is ~11 ms of walk and roughly as much again of rebuild,
+ * which is most of a 16 ms frame -- fine four times a second, and not fine on a
+ * heap several times larger.
+ *
+ * So the interval is not fixed: whatever the last pass cost, the next one waits
+ * at least this many times as long, which bounds the work to 1/N of the frame
+ * thread however big the heap turns out to be. Large heaps lose refresh rate,
+ * which is the right thing to give up -- the display is a 4 Hz sample of a
+ * quantity that moves slowly, and a stuttering cursor is far more obviously
+ * broken than a map that updates twice a second instead of four times. */
+constexpr std::uint32_t kSnapshotDutyFactor = 8;
+
 /* How the session is doing, in the order the status line reports them. */
 enum class SessionState : std::uint8_t {
     Live,      /* attached, target running                              */
@@ -118,6 +146,35 @@ public:
      * summary means the reason is behind a keypress, and a user staring at a
      * frozen map has no way to know there is anything to press. */
     void set_launch(const std::string &output_path, const std::string &argv0);
+
+    /* Turns on snapshot mode: no ring, no events, the live set recovered by
+     * reading the target's own chunk headers on a timer (M2.5).
+     *
+     * This is what `heapviz <pid>` does for a process that was not started
+     * under the interceptor -- which is most of them, since `LD_PRELOAD` binds
+     * at load time and nothing can retrofit it onto a running process. The
+     * session is `observe`d rather than attached, so every ring path in here
+     * stays on its already-existing "not attached" branch and the difference is
+     * confined to `snapshot()`.
+     *
+     * What is lost is everything that needs a timeline: there are no allocation
+     * timestamps in a heap, so heat is aged from when heapviz *first saw* an
+     * address rather than from when the target allocated it, and the cumulative
+     * and peak figures have no source at all. The UI says which mode it is in
+     * for exactly that reason. */
+    void enable_snapshots();
+
+    bool snapshot_mode() const noexcept { return snapshot_mode_; }
+
+    /* The last walk's result, for the header and for tests. Zeroed until the
+     * first tick has run. */
+    const WalkResult &walk() const noexcept { return walk_; }
+
+    /* What the last snapshot pass cost, and how long the next one will wait as
+     * a result. Exposed so a test can assert the pacing rather than infer it
+     * from a stopwatch, which would be measuring the machine. */
+    std::uint32_t walk_cost_ms() const noexcept { return walk_cost_ms_; }
+    std::uint32_t walk_interval_ms() const noexcept { return walk_interval_ms_; }
 
     /* For the exit summary and for tests, which need to assert on what the
      * session saw without scraping the framebuffer. */
@@ -174,6 +231,10 @@ private:
      * it in, replacing the interceptor's `usable - size` approximation. Returns
      * true if anything changed. */
     bool enrich(std::uint32_t now_ms) noexcept;
+
+    /* One pass of snapshot mode: walk, then replace the live set with what the
+     * walk found. Returns true if anything on screen changed. */
+    bool snapshot(std::uint32_t now_ms) noexcept;
     void refit(int w, int h);
 
     RingSession &session_;
@@ -209,6 +270,24 @@ private:
     std::uint32_t enrich_last_ms_ = 0;
     std::uint64_t refined_ = 0;
     std::uint64_t exact_overhead_ = 0;
+
+    /* Snapshot mode (M2.5). Absent unless `enable_snapshots` was called, which
+     * is how every path above stays on its ring-driven default. */
+    std::optional<HeapWalker> walker_;
+    WalkResult                walk_{};
+    std::vector<WalkedChunk>  walked_;
+    /* When heapviz first saw each address in `walked_`, parallel to it.
+     *
+     * A chunk header carries no timestamp, so the honest thing to age a cell by
+     * is not when the target allocated it -- unknowable -- but when this
+     * process first observed it. Carrying it across walks is what stops the
+     * whole map re-flashing as newly allocated four times a second. */
+    std::vector<std::uint32_t> walked_first_ms_;
+    std::uint32_t walk_last_ms_     = 0;
+    std::uint32_t walk_cost_ms_     = 0;
+    std::uint32_t walk_interval_ms_ = kSnapshotIntervalMs;
+    bool          walked_once_   = false;
+    bool          snapshot_mode_ = false;
 
     std::uint64_t origin_ns_ = 0;
     std::uint32_t now_ms_    = 0;

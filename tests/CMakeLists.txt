@@ -171,6 +171,27 @@ target_link_libraries(heap_walker_test PRIVATE heapviz_core)
 add_test(NAME heap_walker COMMAND heap_walker_test)
 set_tests_properties(heap_walker PROPERTIES TIMEOUT 60)
 
+# The other half of the same belief, against the real allocator. `heap_walker`
+# writes every header it reads, so it can only show the walk is self-consistent;
+# this forks a child, lets glibc lay out a real heap, and recovers it from
+# outside. It walks its own descendant deliberately, which is what the default
+# `ptrace_scope = 1` permits.
+#
+# Skipped under ASan for a reason worth distinguishing from the preload tests'.
+# Theirs is that ASan and an LD_PRELOAD malloc hook cannot share a process;
+# this one has no preload at all. The problem here is that ASan replaces the
+# allocator, so the forked child's allocations have ASan's headers rather than
+# ptmalloc's -- and the entire subject of this test is whether ptmalloc's chain
+# looks the way `heap_walker.cpp` believes. Under ASan it correctly finds
+# nothing, which is not a failure of the walk.
+add_executable(heap_walk_live_test integration/heap_walk_live_test.cpp)
+heapviz_test_target(heap_walk_live_test)
+target_link_libraries(heap_walk_live_test PRIVATE heapviz_core)
+if(NOT HEAPVIZ_ASAN)
+  add_test(NAME heap_walk_live COMMAND heap_walk_live_test)
+  set_tests_properties(heap_walk_live PROPERTIES TIMEOUT 60)
+endif()
+
 # --- Capability detection, quantisers and fallback (M4.4) ------------------
 # Detection takes the environment strings as arguments rather than reading
 # them, so this needs no setenv and cannot disturb the tests around it.

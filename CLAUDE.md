@@ -78,6 +78,7 @@ Attach landed in M2.3 and the binary shows a real heap. Commands: `--version`
 ```bash
 ./build/debug/heapviz ./build/debug/churn --threads 1 --seconds 5   # positional launch
 ./build/debug/heapviz $(pgrep -n churn)              # positional attach; one consumer per target
+./build/debug/heapviz $(pgrep -n some_server)        # no segment? snapshot mode, no preload needed
 ./build/debug/heapviz -- ./build/debug/churn --seconds 5   # explicit forms, still supported
 ./build/debug/heapviz --pid $(pgrep -n churn)
 ./build/debug/heapviz --instrument ./some_tui         # terminal 1: exec the target itself
@@ -168,7 +169,7 @@ budget, and the per-cell colour interpolation alone spends most of the frame's
 1 ms. Both binaries still build everywhere, so they can be run by hand in debug
 to read the numbers.
 
-Expected test counts when everything passes: debug 33, release 35, asan 30.
+Expected test counts when everything passes: debug 35, release 37, asan 31.
 
 `attach` is preload-driven, so it is skipped under ASan with the rest of them.
 It launches three `churn` processes over its run, each of which creates a 32 MiB
@@ -314,6 +315,57 @@ supported mode rather than an error path: overhead reads unavailable and the
 session carries on with interceptor data. Reads are batched into one syscall
 because a per-chunk read is a syscall in a loop over the live set. It never
 calls `PTRACE_ATTACH`, which would stop the process being measured.
+
+### Snapshot mode is the same pipeline with no events at all
+
+`LD_PRELOAD` binds when a process loads, so a target that was already running
+has its `malloc` wired straight to libc and no attach can retrofit the
+interceptor onto it. That made `heapviz <pid>` useless for every process the
+user was not willing to restart, which is most of them. M2.5's answer is to stop
+needing events: glibc writes a header before every allocation and the headers
+chain across the region, so `HeapWalker` recovers the live set from outside with
+`process_vm_readv` and no injection.
+
+`heapviz <pid>` now falls back to this whenever there is no segment — including
+for a launched target, since `launch_target`'s close-on-exec pipe already
+diagnoses a failed exec separately, so reaching `NoSegment` means the target is
+running and uninstrumented. The seam is deliberately narrow: `RingSession::observe`
+adopts a pid *without* a ring, so `attached()` stays false and every ring path in
+`HeapApp` stays on the branch it already had. Only `HeapApp::snapshot` is new.
+
+Four things about it are load-bearing:
+
+- **A chunk is judged by its successor.** PREV_INUSE lives in the *next* chunk's
+  size word, which is why the walk emits one chunk behind where it reads and
+  never emits the trailing one — with no successor to consult, and in a
+  well-formed arena that one is the top chunk, which is free space.
+- **The chain start is found, not assumed.** A thread arena begins with a
+  `heap_info`, and the arena's first mapping adds a `malloc_state`; both sizes
+  are glibc-build-specific. Hardcoding either is wrong on the next glibc and
+  wrong *silently* — the walk starts mid-structure, finds nothing, and reports
+  the arena as opaque, which is indistinguishable from a runtime's own mmap'd
+  heap. `find_chain_start` scores candidates instead, which is self-validating.
+- **Aging is from first sighting, not from allocation.** A chunk header has no
+  timestamp. The first-seen time is carried across walks out of the *outgoing*
+  chunk table, which is the only record of it; without that the whole map
+  re-flashes as newly allocated on every tick.
+- **The pass is paced against its own cost.** It is a walk plus a full table
+  replacement plus a full `HeatMap::rebuild`, all three scaling with the live
+  set — 85 ms on a 200k-chunk heap. The next pass waits `kSnapshotDutyFactor`
+  times the last one's cost, so the work is bounded to an eighth of the frame
+  thread and big heaps lose refresh rate rather than smoothness.
+
+Figures with no source are dropped rather than shown as zero, which is M5.4's
+largest-hole rule again: `Metrics::set_cumulative_known(false)` prints "not
+observable" for the cumulative total, and `enrich` is switched off entirely
+because overhead is `usable - request` and a chunk header has no request in it.
+
+Two limitations belong in any change here. `process_vm_readv` needs the same uid
+and, under the default `ptrace_scope = 1`, a descendant — so EPERM on an
+arbitrary pid is the common case, named in the status line and the exit summary
+with both fixes. And a chunk in the tcache or a fastbin keeps its PREV_INUSE
+bit, so small frees read as live; the bound is 64 per size class per thread, and
+it is a property of reading from outside rather than a bug.
 
 `HeapApp` is the real `LoopApp`; `DemoHeap` behind `--term-check` is the
 synthetic one. They drive the same `Grid`/`HeatMap`/`MapView` and differ only in

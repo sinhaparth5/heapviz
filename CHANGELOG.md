@@ -43,6 +43,30 @@ promise about the ABI or the CLI surface.
 
 ### Added
 
+- **`heapviz <pid>` now works on processes that were not started under heapviz.**
+  Previously it could only attach to a target already running `libheapviz.so`,
+  which meant any program you wanted to profile had to be restarted first --
+  and anything long-running, or that you could not restart, was simply out of
+  reach. heapviz now falls back to reading the target's heap directly, so you
+  can point it at a server that has been up for a week.
+
+  This mode is a sample rather than a recording, and the title row says
+  `SNAPSHOT` so you know which one you are looking at. What you get is the live
+  set, sizes, the map, and fragmentation, refreshed a few times a second. What
+  you do not get is anything needing a timeline: no allocation ages, no leak
+  diff against a snapshot, and no cumulative "Allocated" figure -- that field
+  reads "not observable" rather than showing a misleading zero. Launch the
+  target with `heapviz <command>` when you want those.
+
+  Two things to be aware of. Reading another process's memory needs permission:
+  on most distributions `ptrace_scope` is `1`, which allows it only for programs
+  heapviz started itself. If the map comes up empty, heapviz names the two fixes
+  --  `sudo sysctl -w kernel.yama.ptrace_scope=0`, or granting the binary
+  `cap_sys_ptrace` once with `setcap`. And this reads glibc's allocator, so a
+  runtime that manages its own heap inside one big `mmap` -- Node, Bun, the JVM,
+  some Python builds -- shows very little. heapviz reports how many bytes it
+  could not read next to the ones it could, so a small live figure against a
+  large process is never mistaken for the whole picture.
 - Direct launch and attach syntax: `heapviz <command> [args...]` automatically
   loads `libheapviz.so`, while `heapviz <pid>` attaches to a target that was
   already instrumented. The explicit `--` and `--pid` forms remain supported.

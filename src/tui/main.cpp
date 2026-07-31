@@ -39,6 +39,19 @@ namespace {
 
 constexpr std::string_view kVersion = "0.1.0-dev";
 
+/* Where this binary actually lives, for a `setcap` line the user can paste.
+ * /proc/self/exe rather than argv[0], which is whatever the shell resolved and
+ * is a relative path more often than not -- and a relative path in advice
+ * printed just before the shell prompt returns is advice that will be run from
+ * somewhere else. */
+std::string this_binary() {
+    char buf[4096];
+    const ssize_t n = ::readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n <= 0) return "heapviz";
+    buf[n] = '\0';
+    return buf;
+}
+
 void print_version() {
     std::printf("heapviz %s (ABI v%u, %zu-byte events, %zu-byte ring header)\n",
                 kVersion.data(), HEAPVIZ_ABI_VERSION,
@@ -395,14 +408,31 @@ int term_check(const RunOptions &opts) {
 int attach_and_run(int pid, const hv::Launch *launch, const RunOptions &opts) {
     const bool launched = launch != nullptr;
     hv::RingSession session;
-    const hv::AttachStatus st = session.attach(pid);
-    if (st != hv::AttachStatus::Ok) {
+    const hv::AttachStatus st =
+        session.attach(pid, launched ? hv::kAttachTimeoutMs
+                                     : hv::kProbeTimeoutMs);
+
+    /* No segment on a process heapviz did not launch is the ordinary case, not
+     * a failure: `LD_PRELOAD` binds when a process loads, so a program that was
+     * already running has its `malloc` wired straight to libc and no attach can
+     * change that. It can still be read from outside, which is what snapshot
+     * mode does -- and it is the only thing heapviz can offer here, so it is
+     * what heapviz does rather than printing advice about relaunching a process
+     * the user may not be able to restart.
+     *
+     * A launched target reaching NoSegment means the injection did not take --
+     * a static binary, a setuid one, a wrapper script that scrubs the
+     * environment -- and it lands here too. The exec itself is already
+     * diagnosed separately by `launch_target`'s close-on-exec pipe, so reaching
+     * this point means the target really is running and really is uninstru-
+     * mented, which is precisely what snapshot mode is for. Refusing instead
+     * would be throwing away a working heap map to make a point. */
+    const bool snapshot = st == hv::AttachStatus::NoSegment;
+    if (snapshot) session.observe(pid);
+
+    if (st != hv::AttachStatus::Ok && !snapshot) {
         std::fprintf(stderr, "heapviz: %s (pid %d)\n",
                      hv::attach_status_str(st), pid);
-        if (st == hv::AttachStatus::NoSegment && !launched)
-            std::fprintf(stderr,
-                         "heapviz: this process was not started by heapviz; "
-                         "use `heapviz <cmd> [args...]` to launch it\n");
         if (st == hv::AttachStatus::AlreadyWatched)
             std::fprintf(stderr, "heapviz: the other one is pid %u\n",
                          session.other_consumer());
@@ -437,6 +467,7 @@ int attach_and_run(int pid, const hv::Launch *launch, const RunOptions &opts) {
 
     hv::EventLoop loop(cfg);
     hv::HeapApp   app(session, caps, hv::theme_for(opts.theme), opts.animations);
+    if (snapshot) app.enable_snapshots();
     if (launched) app.set_launch(launch->output_path, launch->argv0);
     const hv::LoopExit why = loop.run(app);
 
@@ -448,13 +479,51 @@ int attach_and_run(int pid, const hv::Launch *launch, const RunOptions &opts) {
     session.detach();
 
     const hv::LoopStats &s = loop.stats();
-    std::printf("heapviz: %s after %llu events from pid %d (%llu frames, "
-                "%llu drawn)\n",
-                app.state() == hv::SessionState::Exited ? "target exited"
-                                                        : hv::loop_exit_str(why),
-                static_cast<unsigned long long>(app.events_seen()), pid,
-                static_cast<unsigned long long>(s.frames),
-                static_cast<unsigned long long>(s.drawn));
+    const char *ended = app.state() == hv::SessionState::Exited
+                            ? "target exited"
+                            : hv::loop_exit_str(why);
+
+    if (snapshot) {
+        /* A different sentence, because "after N events" would read as zero
+         * events having been produced rather than as none being observable. */
+        const hv::WalkResult &wr = app.walk();
+        char human[32];
+        hv::format_byte_size(human, sizeof human, wr.opaque_bytes);
+        std::printf("heapviz: %s; last snapshot of pid %d held %llu chunks, "
+                    "%s unreadable (%llu frames, %llu drawn)\n",
+                    ended, pid,
+                    static_cast<unsigned long long>(wr.chunks), human,
+                    static_cast<unsigned long long>(s.frames),
+                    static_cast<unsigned long long>(s.drawn));
+
+        /* Printed whenever the pacing had to back off, because a map updating
+         * twice a second on a big heap is a question the user will otherwise
+         * ask about heapviz rather than about the size of their heap. */
+        if (app.walk_interval_ms() > hv::kSnapshotIntervalMs)
+            std::printf("heapviz: each snapshot cost %ums on this heap, so "
+                        "sampling backed off to every %ums to keep the frame "
+                        "thread free\n",
+                        app.walk_cost_ms(), app.walk_interval_ms());
+
+        /* The one failure worth repeating outside the TUI: the map was empty
+         * and the reason scrolled past in a status line the user may not have
+         * looked at, and the fix is a command rather than something to change
+         * about heapviz. */
+        if (wr.status == hv::WalkStatus::Denied)
+            std::printf(
+                "heapviz: could not read pid %d's memory. Either run heapviz "
+                "as the same user with `sudo sysctl -w "
+                "kernel.yama.ptrace_scope=0`,\nheapviz: or grant the binary "
+                "the capability once: `sudo setcap cap_sys_ptrace+ep %s`\n",
+                pid, this_binary().c_str());
+    } else {
+        std::printf("heapviz: %s after %llu events from pid %d (%llu frames, "
+                    "%llu drawn)\n",
+                    ended,
+                    static_cast<unsigned long long>(app.events_seen()), pid,
+                    static_cast<unsigned long long>(s.frames),
+                    static_cast<unsigned long long>(s.drawn));
+    }
 
     /* "target exited" on its own is a true statement that answers nothing, and
      * for a target heapviz launched it is usually heapviz's own doing. Say which
